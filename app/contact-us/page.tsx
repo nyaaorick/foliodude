@@ -6,8 +6,9 @@ export default function ContactUsPage() {
         <div className="mt-3 space-y-2 text-sm text-muted-foreground">
           <p>This project is open-source and available on GitHub.</p>
           <p>
-            Your data is stored on Supabase-hosted servers. While your data is safe,
-            please avoid entering sensitive information such as real account numbers.
+            Your financial data is stored <strong>locally on your device</strong> using an
+            in-browser database. It never leaves your device unless you explicitly enable
+            cloud sync. You are safe to enter real account information.
           </p>
           <p>
             FolioDude was built for people whose finances are spread across multiple

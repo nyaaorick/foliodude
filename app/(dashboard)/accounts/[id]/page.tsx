@@ -1,5 +1,5 @@
 import { Suspense } from 'react';
-import { redirect, notFound } from 'next/navigation';
+import { notFound } from 'next/navigation';
 import Link from 'next/link';
 import { ArrowLeft } from 'lucide-react';
 import {
@@ -8,7 +8,7 @@ import {
   loadAccountDetailSupport,
   loadAccountTransactions,
 } from '@/lib/actions/account-read-actions';
-import { getSessionContext } from '@/lib/supabase/server';
+
 import { CLOUD_REWARD_RULE_SETS } from '@/lib/data/cloud-rules';
 import { AccountType, type AccountWithStats } from '@/lib/types/accounts';
 import {
@@ -448,20 +448,17 @@ async function AccountDetailSupportStream({
   );
 }
 
+
 export default async function AccountDetailPage({
   params,
 }: {
   params: Promise<{ id: string }>;
 }) {
-  const [{ id }, context] = await Promise.all([params, getSessionContext()]);
+  const { id } = await params;
 
-  if (!context) {
-    redirect('/login');
-  }
-
-  const accountPromise = loadAccountDetailCore(context, id);
-  const supportDataPromise = loadAccountDetailSupport(context);
-  const transactionsPromise = loadAccountTransactions(context, id);
+  const accountPromise = loadAccountDetailCore(id);
+  const supportDataPromise = loadAccountDetailSupport();
+  const transactionsPromise = loadAccountTransactions(id);
 
   return (
     <div className="mx-auto max-w-4xl space-y-6 px-4 py-8 sm:px-6 lg:px-8">

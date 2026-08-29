@@ -1,16 +1,8 @@
-import { redirect } from 'next/navigation';
 import { getDashboardAnalytics } from '@/lib/actions/getDashboardAnalytics';
-import { getSessionContext } from '@/lib/supabase/server';
 import { DashboardOverview } from '@/components/features/dashboard';
 
 export default async function DashboardPage() {
-  const context = await getSessionContext();
-
-  if (!context) {
-    redirect('/login');
-  }
-
-  const analyticsResult = await getDashboardAnalytics(context);
+  const analyticsResult = await getDashboardAnalytics();
 
   if (!analyticsResult.success) {
     return (

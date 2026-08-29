@@ -68,14 +68,12 @@ function AuthNavItem({
   );
 
   return (
-    <form action={signOut}>
-      <button type="submit" className={className}>
-        <Icon className={cn('shrink-0', mobile ? 'size-3.5' : 'size-4')} />
-        <span className={cn(mobile ? 'text-[0.82rem]' : 'text-[0.92rem]')}>
-          logout
-        </span>
-      </button>
-    </form>
+    <button type="button" onClick={signOut} className={className}>
+      <Icon className={cn('shrink-0', mobile ? 'size-3.5' : 'size-4')} />
+      <span className={cn(mobile ? 'text-[0.82rem]' : 'text-[0.92rem]')}>
+        logout
+      </span>
+    </button>
   );
 }
 

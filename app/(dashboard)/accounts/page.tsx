@@ -1,24 +1,16 @@
-import { redirect } from 'next/navigation';
 import { getAccounts } from '@/lib/actions/account-read-actions';
 import { getRewardRates } from '@/lib/actions/reward-actions';
-import { getSessionContext } from '@/lib/supabase/server';
 import { AccountType } from '@/lib/types/accounts';
 import { AccountList } from '@/components/features/accounts/account-list';
 import { CreateAccountDialog } from '@/components/features/accounts/create-account-dialog';
 import { SharePriceSync } from '@/components/features/accounts/share-price-sync';
 
 export default async function AccountsPage() {
-  const context = await getSessionContext();
-
-  if (!context) {
-    redirect('/login');
-  }
-
-  const [result, rewardRates] = await Promise.all([
-    getAccounts(context),
-    getRewardRates(context),
+  const [accounts, rewardRates] = await Promise.all([
+    getAccounts(),
+    getRewardRates(),
   ]);
-  const accounts = result;
+
   const hasShareAccounts = accounts.some(
     (account) => account.type === AccountType.SHARE,
   );
@@ -39,7 +31,6 @@ export default async function AccountsPage() {
                 Track cash, cards, airline miles, and investments in one warm ledger.
               </p>
             </div>
-            <span className="text-sm text-muted-foreground">{context.userEmail}</span>
           </div>
           <div className="flex flex-wrap items-start gap-2">
             {hasShareAccounts && (
