@@ -1,0 +1,36 @@
+{
+  "id": "amex-gold-core",
+  "name": "Amex Gold Core",
+  "description": "Baseline Amex Gold earning categories for common household spend.",
+  "source": "cloud",
+  "version": 1,
+  "rules": [
+    {
+      "category": "Dining",
+      "multiplier": 0.04,
+      "currency": "MR",
+      "rule_source": "cloud"
+    },
+    {
+      "category": "Grocery",
+      "multiplier": 0.04,
+      "currency": "MR",
+      "rule_source": "cloud",
+      "cap_amount": 2500,
+      "cap_period": "annual",
+      "fallback_rate": 0.01
+    },
+    {
+      "category": "Travel",
+      "multiplier": 0.03,
+      "currency": "MR",
+      "rule_source": "cloud"
+    },
+    {
+      "category": "Other",
+      "multiplier": 0.01,
+      "currency": "MR",
+      "rule_source": "cloud"
+    }
+  ]
+}
