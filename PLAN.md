@@ -50,27 +50,72 @@ The goal of this migration is to transition **FinProject** from a traditional We
 
 ---
 
-## 4. Two-Stage AI Finance Pipeline (Live Text + Text LLM)
+## 4. Four-Stage AI Receipt Pipeline (Progressive Degradation)
 
-Instead of uploading multi-megabyte images to heavy multimodal models, FinProject adopts a high-efficiency **Two-Stage Architecture**:
+Instead of always calling a cloud LLM, FinProject adopts a **progressive degradation** strategy — each stage runs only if the previous one fails, minimizing cost and latency while maximizing accuracy.
 
 ```mermaid
-graph LR
-    subgraph "Stage 1: On-Device Text Extraction (0ms network)"
-        Scan[Camera Scan / Receipt Screenshot] -->|iOS Live Text / Web WASM OCR| RawText[Raw Extracted Text<br/>~0.2 KB string]
+graph TD
+    Scan[📸 Camera Scan / Screenshot]
+
+    subgraph "Stage 1: OCR + Spatial Grouping (On-Device, $0)"
+        Scan -->|iOS Live Text / Tesseract.js WASM| OCR[Raw OCR Words + Bounding Boxes]
+        OCR -->|Group by Y-coordinate| Lines["Structured Line Array<br/>e.g. 'TOTAL  $47.82'"]
     end
 
-    subgraph "Stage 2: Semantic Finance Planning (100ms API)"
-        RawText -->|Inject existing accounts| Prompt[Text Planner Prompt]
-        Prompt -->|Lightweight Text API| Gemini[Gemini 2.5 Flash (Text-only)]
-        Gemini -->|Structured JSON| Action[Auto-fill Transaction / Balance]
+    subgraph "Stage 2: Rule Engine (On-Device, $0)"
+        Lines -->|Regex + Keyword Map| Rules{Extracted<br/>Amount + Merchant + Category?}
     end
+
+    subgraph "Stage 3: Local ML Classifier (On-Device, $0)"
+        Rules -->|❌ Low confidence| ML["ONNX Runtime Web<br/>(10MB+ multilingual NER + classifier model)"]
+        ML --> MLResult{Structured<br/>Result?}
+    end
+
+    subgraph "Stage 4: Multimodal LLM Fallback (Cloud, ~$0.01/image)"
+        MLResult -->|❌ Still failed| Compress[Compress original image]
+        Compress -->|Send image + account list| Gemini["Gemini 2.5 Flash<br/>(Vision / Multimodal)"]
+        Gemini -->|Structured JSON| Fill
+    end
+
+    Rules -->|✅ Success| Fill[Auto-fill Transaction Form]
+    MLResult -->|✅ Success| Fill
 ```
 
+### Stage Details:
+
+#### Stage 1 — OCR + Spatial Line Grouping (On-Device)
+- **iOS Safari PWA**: Leverage iOS Live Text via camera `<input>` for high-quality Neural Engine OCR.
+- **Other browsers**: Tesseract.js (WASM, ~15MB) with bounding-box output.
+- **Key step**: Group OCR words into logical lines by Y-coordinate proximity, so `"TOTAL"` and `"$47.82"` on the same row are linked together.
+- Cost: **$0**, Latency: **<500ms**
+
+#### Stage 2 — Rule Engine (On-Device)
+- Regex patterns extract `Total/合计/AMOUNT DUE` lines → parse dollar amount.
+- First non-empty line or known header patterns → extract merchant name.
+- Keyword-to-category mapping table (e.g. `"costco" → Grocery`, `"uber" → Transport`).
+- If amount + merchant + category all extracted with high confidence → **done, skip remaining stages**.
+- Cost: **$0**, Latency: **<10ms**
+
+#### Stage 3 — Local ML Classifier (On-Device)
+- **ONNX Runtime Web** running a **10MB+ multilingual model** for:
+  - **Named Entity Recognition (NER)**: Extract amounts, dates, merchant names from messy OCR text.
+  - **Text Classification**: Classify merchant/description into spending categories.
+- Model is cached in IndexedDB after first download; runs entirely offline afterwards.
+- If structured result is complete → **done, skip Stage 4**.
+- Cost: **$0** (after initial model download), Latency: **<1s**
+
+#### Stage 4 — Multimodal LLM Fallback (Cloud, Last Resort)
+- Triggered only when all local stages fail (estimated <20% of receipts).
+- Compress the **original image** (not OCR text) and send directly to Gemini 2.5 Flash Vision.
+- The LLM "sees" the receipt image and returns structured JSON with amount, merchant, category, date.
+- Cost: **~$0.01/image**, Latency: **~1-2s**
+
 ### Key Advantages:
-- **Ultra Low Latency**: Payload reduced from ~1MB image to ~0.2KB plain text; API latency drops to ~100-200ms.
-- **Minimal Token Consumption**: Consumes only ~50-100 text tokens vs. 1000+ multimodal image tokens.
-- **Maximum Privacy**: Raw images never leave the user's device.
+- **80%+ receipts processed fully offline** with zero API cost and <500ms latency.
+- **Maximum privacy**: Original images only leave the device in the rare Stage 4 fallback.
+- **Graceful degradation**: Even the most illegible receipt gets handled — the pipeline never returns "failed".
+- **Minimal cloud spend**: Only ~20% of receipts hit the paid API at ~$0.01 each.
 
 ---
 
@@ -127,10 +172,23 @@ graph TD
 - [ ] Refactor `lib/actions/*.ts` into client-side direct database queries (0ms latency, offline capable).
 - [ ] Implement database schema migration runner to apply SQL schemas on initial client boot.
 
-### Phase 4: Two-Stage AI Pipeline Integration
-- [ ] Integrate iOS Live Text / camera scanner button trigger in the transaction input modal.
-- [ ] Connect client-side OCR text extractor with `buildTextPlannerPrompt` from `debug-image-ocr.js`.
-- [ ] Send lightweight text payload to Gemini 2.5 Flash text API and auto-populate structured fields.
+### Phase 4: Four-Stage AI Receipt Pipeline
+- [ ] **Stage 1 — OCR + Spatial Grouping**:
+  - [ ] Integrate iOS Live Text camera trigger via `<input type="file" capture="environment">`.
+  - [ ] Add Tesseract.js (WASM) as cross-browser fallback OCR engine.
+  - [ ] Implement Y-coordinate line grouping to produce structured `LineArray` from raw OCR bounding boxes.
+- [ ] **Stage 2 — Rule Engine**:
+  - [ ] Build regex-based amount extractor (supports `Total`, `合计`, `AMOUNT DUE`, multi-currency).
+  - [ ] Build merchant name extractor (first-line heuristics + known header patterns).
+  - [ ] Create keyword-to-category mapping table (`lib/data/receipt-categories.ts`).
+- [ ] **Stage 3 — Local ML Classifier**:
+  - [ ] Integrate ONNX Runtime Web with a 10MB+ multilingual NER + text classification model.
+  - [ ] Cache model in IndexedDB for offline use after first download.
+  - [ ] Build confidence scoring to decide whether to accept result or fall through to Stage 4.
+- [ ] **Stage 4 — Multimodal LLM Fallback**:
+  - [ ] Implement image compression (quality reduction + resize) before upload.
+  - [ ] Send compressed image + user's account list to Gemini 2.5 Flash Vision API.
+  - [ ] Parse structured JSON response and auto-populate transaction form.
 
 ### Phase 5: Multi-Provider Auth & Encrypted Snapshot Cloud Sync
 - [ ] Implement OAuth flows (Google, GitHub, Microsoft) using Supabase Auth with `browser.identity.launchWebAuthFlow` / popup.
