@@ -1,26 +1,30 @@
 -- ============================================================
--- 001_init.sql
--- Initial schema: accounts + transactions tables
+-- 001_init.sql  (PGLite local-first edition)
+-- Removed: auth.users foreign keys, RLS, all CREATE POLICY
+-- Kept:    ENUMs, CHECK constraints, indexes, triggers
+-- user_id is stored as a plain UUID (set by the frontend
+-- after Supabase OAuth login; cloud sync is handled at the
+-- Storage layer, not the DB layer).
 -- ============================================================
 
 -- ------------------------------------------------------------
 -- 1. ENUM types
 -- ------------------------------------------------------------
 
-CREATE TYPE public.account_type AS ENUM (
+CREATE TYPE account_type AS ENUM (
   'ASSET',
   'LIABILITY',
   'AIRLINE_MILES',
   'SHARE'
 );
 
-CREATE TYPE public.airline_program_type AS ENUM (
+CREATE TYPE airline_program_type AS ENUM (
   'KRISFLYER',
   'AVIOS',
   'ASIA_MILES'
 );
 
-CREATE TYPE public.transaction_type AS ENUM (
+CREATE TYPE transaction_type AS ENUM (
   'EXPENSE',
   'INCOME',
   'TRANSFER',
@@ -38,31 +42,31 @@ CREATE TYPE public.transaction_type AS ENUM (
 -- 2. accounts table
 -- ------------------------------------------------------------
 
-CREATE TABLE public.accounts (
-  id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id         UUID        NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-  name            TEXT        NOT NULL,
-  type            public.account_type NOT NULL,
-  currency        TEXT        NOT NULL,
-  balance         DECIMAL(12,2) NOT NULL DEFAULT 0,
-  credit_limit    DECIMAL(12,2),
-  reward_currency TEXT,
-  reward_balance  INTEGER     NOT NULL DEFAULT 0 CHECK (reward_balance >= 0),
-  airline_program public.airline_program_type,
-  usd_per_10k_miles INTEGER   NOT NULL DEFAULT 0 CHECK (usd_per_10k_miles >= 0),
-  transfer_rates  JSONB       NOT NULL DEFAULT '{}'::jsonb,
-  brokerage       TEXT,
-  ticker          TEXT,
-  brokerage_account_id UUID REFERENCES public.accounts(id) ON DELETE SET NULL,
-  shares          DECIMAL(18,6) NOT NULL DEFAULT 0,
-  cost_basis      DECIMAL(18,2) NOT NULL DEFAULT 0,
-  last_price      DECIMAL(18,4),
-  last_price_at   TIMESTAMPTZ,
-  reward_rules    JSONB       NOT NULL DEFAULT '[]'::jsonb,
-  spend_stats     JSONB       NOT NULL DEFAULT '{}'::jsonb,
-  auto_pay_config JSONB,
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+CREATE TABLE accounts (
+  id                   UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id              UUID          NOT NULL,   -- set by frontend after OAuth; no FK to auth.users
+  name                 TEXT          NOT NULL,
+  type                 account_type  NOT NULL,
+  currency             TEXT          NOT NULL,
+  balance              DECIMAL(12,2) NOT NULL DEFAULT 0,
+  credit_limit         DECIMAL(12,2),
+  reward_currency      TEXT,
+  reward_balance       INTEGER       NOT NULL DEFAULT 0 CHECK (reward_balance >= 0),
+  airline_program      airline_program_type,
+  usd_per_10k_miles    INTEGER       NOT NULL DEFAULT 0 CHECK (usd_per_10k_miles >= 0),
+  transfer_rates       JSONB         NOT NULL DEFAULT '{}'::jsonb,
+  brokerage            TEXT,
+  ticker               TEXT,
+  brokerage_account_id UUID REFERENCES accounts(id) ON DELETE SET NULL,
+  shares               DECIMAL(18,6) NOT NULL DEFAULT 0,
+  cost_basis           DECIMAL(18,2) NOT NULL DEFAULT 0,
+  last_price           DECIMAL(18,4),
+  last_price_at        TIMESTAMPTZ,
+  reward_rules         JSONB         NOT NULL DEFAULT '[]'::jsonb,
+  spend_stats          JSONB         NOT NULL DEFAULT '{}'::jsonb,
+  auto_pay_config      JSONB,
+  created_at           TIMESTAMPTZ   NOT NULL DEFAULT now(),
+  updated_at           TIMESTAMPTZ   NOT NULL DEFAULT now(),
   CONSTRAINT accounts_share_currency_check
     CHECK (type <> 'SHARE' OR currency = 'USD'),
   CONSTRAINT accounts_airline_miles_check
@@ -107,26 +111,38 @@ CREATE TABLE public.accounts (
     )
 );
 
-CREATE TABLE public.reward_rates (
-  user_id            UUID        NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-  reward_currency    TEXT        NOT NULL,
-  usd_per_10k_points INTEGER     NOT NULL CHECK (usd_per_10k_points >= 0),
+-- ------------------------------------------------------------
+-- 3. reward_rates table
+-- ------------------------------------------------------------
+
+CREATE TABLE reward_rates (
+  user_id            UUID    NOT NULL,           -- plain UUID, no FK
+  reward_currency    TEXT    NOT NULL,
+  usd_per_10k_points INTEGER NOT NULL CHECK (usd_per_10k_points >= 0),
   updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (user_id, reward_currency)
 );
 
--- Index: fast lookup of all accounts for a given user
-CREATE INDEX accounts_user_id_idx ON public.accounts(user_id);
-CREATE INDEX reward_rates_user_id_idx ON public.reward_rates(user_id);
+-- ------------------------------------------------------------
+-- 4. Indexes
+-- ------------------------------------------------------------
+
+CREATE INDEX accounts_user_id_idx ON accounts(user_id);
+CREATE INDEX reward_rates_user_id_idx ON reward_rates(user_id);
+
 CREATE UNIQUE INDEX accounts_user_brokerage_ticker_unique_idx
-  ON public.accounts(user_id, brokerage_account_id, ticker)
+  ON accounts(user_id, brokerage_account_id, ticker)
   WHERE type = 'SHARE';
+
 CREATE UNIQUE INDEX accounts_user_airline_program_unique_idx
-  ON public.accounts(user_id, airline_program)
+  ON accounts(user_id, airline_program)
   WHERE type = 'AIRLINE_MILES';
 
--- Trigger: keep updated_at in sync on every UPDATE
-CREATE OR REPLACE FUNCTION public.set_updated_at()
+-- ------------------------------------------------------------
+-- 5. updated_at trigger (PGLite supports plpgsql)
+-- ------------------------------------------------------------
+
+CREATE OR REPLACE FUNCTION set_updated_at()
 RETURNS TRIGGER AS $$
 BEGIN
   NEW.updated_at = now();
@@ -135,38 +151,38 @@ END;
 $$ LANGUAGE plpgsql;
 
 CREATE TRIGGER accounts_set_updated_at
-  BEFORE UPDATE ON public.accounts
+  BEFORE UPDATE ON accounts
   FOR EACH ROW
-  EXECUTE FUNCTION public.set_updated_at();
+  EXECUTE FUNCTION set_updated_at();
 
 CREATE TRIGGER reward_rates_set_updated_at
-  BEFORE UPDATE ON public.reward_rates
+  BEFORE UPDATE ON reward_rates
   FOR EACH ROW
-  EXECUTE FUNCTION public.set_updated_at();
+  EXECUTE FUNCTION set_updated_at();
 
 -- ------------------------------------------------------------
--- 3. transactions table
+-- 6. transactions table
 -- ------------------------------------------------------------
 
-CREATE TABLE public.transactions (
-  id                       UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id                  UUID        NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-  type                     public.transaction_type NOT NULL,
-  amount                   DECIMAL(12,2) NOT NULL CHECK (amount > 0),
+CREATE TABLE transactions (
+  id                       UUID             PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id                  UUID             NOT NULL,  -- plain UUID, no FK
+  type                     transaction_type NOT NULL,
+  amount                   DECIMAL(12,2)    NOT NULL CHECK (amount > 0),
   currency                 TEXT,
   reward_currency          TEXT,
-  metadata                 JSONB       NOT NULL DEFAULT '{}'::jsonb,
-  reference_transaction_id UUID REFERENCES public.transactions(id) ON DELETE SET NULL,
-  from_account             UUID        REFERENCES public.accounts(id) ON DELETE SET NULL,
-  to_account               UUID        REFERENCES public.accounts(id) ON DELETE SET NULL,
+  metadata                 JSONB            NOT NULL DEFAULT '{}'::jsonb,
+  reference_transaction_id UUID REFERENCES transactions(id) ON DELETE SET NULL,
+  from_account             UUID REFERENCES accounts(id) ON DELETE SET NULL,
+  to_account               UUID REFERENCES accounts(id) ON DELETE SET NULL,
   category                 TEXT,
   memo                     TEXT,
   share_ticker             TEXT,
   share_quantity           DECIMAL(18,6),
   share_price              DECIMAL(18,4),
   fee                      DECIMAL(18,2),
-  transaction_at           TIMESTAMPTZ NOT NULL,
-  created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
+  transaction_at           TIMESTAMPTZ      NOT NULL,
+  created_at               TIMESTAMPTZ      NOT NULL DEFAULT now(),
   CONSTRAINT transactions_share_fields_check
     CHECK (
       (
@@ -262,55 +278,8 @@ CREATE TABLE public.transactions (
 );
 
 -- Indexes
-CREATE INDEX transactions_user_id_idx      ON public.transactions(user_id);
-CREATE INDEX transactions_from_account_idx ON public.transactions(from_account);
-CREATE INDEX transactions_to_account_idx   ON public.transactions(to_account);
-CREATE INDEX transactions_reference_transaction_id_idx
-  ON public.transactions(reference_transaction_id);
-
--- ------------------------------------------------------------
--- 4. Row Level Security
--- ------------------------------------------------------------
-
-ALTER TABLE public.accounts     ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.reward_rates ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.transactions ENABLE ROW LEVEL SECURITY;
-
--- accounts policies
-CREATE POLICY "accounts_select_own" ON public.accounts
-  FOR SELECT USING (user_id = auth.uid());
-
-CREATE POLICY "accounts_insert_own" ON public.accounts
-  FOR INSERT WITH CHECK (user_id = auth.uid());
-
-CREATE POLICY "accounts_update_own" ON public.accounts
-  FOR UPDATE USING (user_id = auth.uid());
-
-CREATE POLICY "accounts_delete_own" ON public.accounts
-  FOR DELETE USING (user_id = auth.uid());
-
--- reward_rates policies
-CREATE POLICY "reward_rates_select_own" ON public.reward_rates
-  FOR SELECT USING (user_id = auth.uid());
-
-CREATE POLICY "reward_rates_insert_own" ON public.reward_rates
-  FOR INSERT WITH CHECK (user_id = auth.uid());
-
-CREATE POLICY "reward_rates_update_own" ON public.reward_rates
-  FOR UPDATE USING (user_id = auth.uid());
-
-CREATE POLICY "reward_rates_delete_own" ON public.reward_rates
-  FOR DELETE USING (user_id = auth.uid());
-
--- transactions policies
-CREATE POLICY "transactions_select_own" ON public.transactions
-  FOR SELECT USING (user_id = auth.uid());
-
-CREATE POLICY "transactions_insert_own" ON public.transactions
-  FOR INSERT WITH CHECK (user_id = auth.uid());
-
-CREATE POLICY "transactions_update_own" ON public.transactions
-  FOR UPDATE USING (user_id = auth.uid());
-
-CREATE POLICY "transactions_delete_own" ON public.transactions
-  FOR DELETE USING (user_id = auth.uid());
+CREATE INDEX transactions_user_id_idx      ON transactions(user_id);
+CREATE INDEX transactions_from_account_idx ON transactions(from_account);
+CREATE INDEX transactions_to_account_idx   ON transactions(to_account);
+CREATE INDEX transactions_reference_idx    ON transactions(reference_transaction_id);
+CREATE INDEX transactions_at_idx           ON transactions(transaction_at DESC);
