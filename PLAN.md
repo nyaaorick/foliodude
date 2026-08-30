@@ -50,7 +50,89 @@ The goal of this migration is to transition **FinProject** from a traditional We
 
 ---
 
-## 4. Three-Stage AI Receipt Pipeline (Progressive Degradation)
+## 4. System Architecture
+
+```mermaid
+graph TD
+    subgraph "Local Client Engine (Cross-Browser via WXT / PWA)"
+        UI[React 19 + shadcn/ui<br/>(Mobile BottomSheet & Desktop SidePanel)]
+        Engine[WASM PostgreSQL<br/>(@electric-sql/pglite)]
+        LocalDB[(IndexedDB / OPFS<br/>idb://finproject)]
+        LiveTextOCR[iOS Live Text / Local OCR Module]
+        SyncWorker[Background Service Worker / Client SyncEngine]
+
+        UI <-->|0ms Local Query| Engine
+        Engine <--> LocalDB
+        LiveTextOCR -->|Extracted Text| UI
+        SyncWorker -->|Lazy Snapshot Catch-up & API Sync| Engine
+    end
+
+    subgraph "Serverless Cloud ($0 Zero Maintenance)"
+        AuthService[Supabase Auth<br/>(Google, GitHub, Microsoft OAuth)]
+        Storage[(Cloudflare R2 / Supabase Storage<br/>Encrypted Snapshot Sync)]
+        GeminiAPI[Gemini 2.5 Flash Text API]
+        LandingSite[Static Landing Website<br/>(Cloudflare Pages / Vercel)]
+    end
+
+    UI -->|Text-only Prompt| GeminiAPI
+    SyncWorker <-->|Auth Token| AuthService
+    SyncWorker <-->|Upload / Download encrypted .sql| Storage
+```
+
+---
+
+## 5. Migration Roadmap (Step-by-Step)
+
+### Phase 1: Build Tooling & WXT Multi-Browser Setup (Highest Priority)
+- [ ] Initialize extension architecture using **WXT (Next-Gen Web Extension Framework)** with React 19 + TypeScript + Tailwind CSS.
+- [ ] Configure PWA manifest (`public/manifest.webmanifest`) and iOS mobile metadata for standalone home-screen installation.
+- [ ] Configure multi-target build scripts:
+  - `npm run build:chrome`
+  - `npm run build:firefox`
+  - `npm run build:safari`
+  - `npm run build:pwa` (Static web output for Cloudflare Pages/Vercel)
+
+### Phase 2: Local Database Layer (@electric-sql/pglite)
+- [ ] Integrate `@electric-sql/pglite` with IndexedDB persistence (`idb://finproject`) for full Safari & Firefox compatibility.
+- [ ] Refactor `lib/actions/*.ts` into client-side direct database queries (0ms latency, offline capable).
+- [ ] Implement database schema migration runner to apply SQL schemas on initial client boot.
+
+### Phase 3: Mobile Portrait UI Redesign & Component Migration
+- [ ] Implement Mobile Portrait layout with iOS Safe Area support (`env(safe-area-inset-bottom)` and `100dvh`).
+- [ ] Build **Bottom Sheet Drawer** (using Vaul / Radix Sheet) for transaction and transfer creation.
+- [ ] Migrate `components/` and `app/(dashboard)` UI into responsive views (Bottom Tabs on mobile portrait, Sidebar on desktop).
+- [ ] Optimize Recharts components for touch gestures and narrow portrait viewports (375px - 430px).
+
+### Phase 4: Multi-Provider Auth & Encrypted Snapshot Cloud Sync
+- [ ] Implement OAuth flows (Google, GitHub, Microsoft) using Supabase Auth with `browser.identity.launchWebAuthFlow` / popup.
+- [ ] Develop `SyncEngine`:
+  - Debounced auto-backup of `.sql` dump to Cloudflare R2 / Supabase Storage on local changes.
+  - Snapshot download and restore flow when logging in on a new device.
+  - Implement lazy net-worth snapshot catch-up on app launch.
+
+### Phase 5: Three-Stage AI Receipt Pipeline (Deferred)
+- [ ] **Stage 1 — OCR + Spatial Grouping**:
+  - [ ] Integrate iOS Live Text camera trigger via `<input type="file" capture="environment">`.
+  - [ ] Add Tesseract.js (WASM) as cross-browser fallback OCR engine.
+  - [ ] Implement Y-coordinate line grouping to produce structured `LineArray` from raw OCR bounding boxes.
+  - [ ] Build regex-based amount extractor (supports `Total`, `合计`, multi-currency) directly on OCR lines.
+- [ ] **Stage 2 — Local ML Classifier**:
+  - [ ] Integrate Transformers.js with `Xenova/bert-base-multilingual-cased-ner-hrl` (~45MB INT4).
+  - [ ] Build zero-shot classification wrapper to map extracted text to user's expense categories.
+  - [ ] Implement confidence scoring to decide whether to accept result or fall through to Stage 3.
+- [ ] **Stage 3 — Multimodal LLM Fallback**:
+  - [ ] Implement image compression (quality reduction + resize) before upload.
+  - [ ] Send compressed image + user's account list to Gemini 2.5 Flash Vision API.
+  - [ ] Parse structured JSON response and auto-populate transaction form.
+
+### Phase 6: Static Deployment & Decommission
+- [ ] Deploy static PWA and marketing site to Cloudflare Pages / Vercel.
+- [ ] Verify standalone iOS Safari "Add to Home Screen" behavior and Firefox extension build.
+- [ ] Decommission Docker / VPS server infrastructure.
+
+---
+
+## 6. Detailed Spec: Three-Stage AI Receipt Pipeline (Progressive Degradation)
 
 Instead of always calling a cloud LLM, FinProject adopts a **progressive degradation** strategy — each stage runs only if the previous one fails, minimizing cost and latency while maximizing accuracy.
 
@@ -109,85 +191,3 @@ graph TD
 - **No custom model training required** — pre-trained multilingual NER works out of the box.
 - **Maximum privacy**: Original images only leave the device in the rare Stage 3 fallback.
 - **Graceful degradation**: Even the most illegible receipt gets handled — the pipeline never returns "failed".
-
----
-
-## 5. System Architecture
-
-```mermaid
-graph TD
-    subgraph "Local Client Engine (Cross-Browser via WXT / PWA)"
-        UI[React 19 + shadcn/ui<br/>(Mobile BottomSheet & Desktop SidePanel)]
-        Engine[WASM PostgreSQL<br/>(@electric-sql/pglite)]
-        LocalDB[(IndexedDB / OPFS<br/>idb://finproject)]
-        LiveTextOCR[iOS Live Text / Local OCR Module]
-        SyncWorker[Background Service Worker / Client SyncEngine]
-
-        UI <-->|0ms Local Query| Engine
-        Engine <--> LocalDB
-        LiveTextOCR -->|Extracted Text| UI
-        SyncWorker -->|Lazy Snapshot Catch-up & API Sync| Engine
-    end
-
-    subgraph "Serverless Cloud ($0 Zero Maintenance)"
-        AuthService[Supabase Auth<br/>(Google, GitHub, Microsoft OAuth)]
-        Storage[(Cloudflare R2 / Supabase Storage<br/>Encrypted Snapshot Sync)]
-        GeminiAPI[Gemini 2.5 Flash Text API]
-        LandingSite[Static Landing Website<br/>(Cloudflare Pages / Vercel)]
-    end
-
-    UI -->|Text-only Prompt| GeminiAPI
-    SyncWorker <-->|Auth Token| AuthService
-    SyncWorker <-->|Upload / Download encrypted .sql| Storage
-```
-
----
-
-## 6. Migration Roadmap (Step-by-Step)
-
-### Phase 1: Build Tooling & WXT Multi-Browser Setup
-- [ ] Initialize extension architecture using **WXT (Next-Gen Web Extension Framework)** with React 19 + TypeScript + Tailwind CSS.
-- [ ] Configure PWA manifest (`public/manifest.webmanifest`) and iOS mobile metadata for standalone home-screen installation.
-- [ ] Configure multi-target build scripts:
-  - `npm run build:chrome`
-  - `npm run build:firefox`
-  - `npm run build:safari`
-  - `npm run build:pwa` (Static web output for Cloudflare Pages/Vercel)
-
-### Phase 2: Mobile Portrait UI Redesign & Component Migration
-- [ ] Implement Mobile Portrait layout with iOS Safe Area support (`env(safe-area-inset-bottom)` and `100dvh`).
-- [ ] Build **Bottom Sheet Drawer** (using Vaul / Radix Sheet) for transaction and transfer creation.
-- [ ] Migrate `components/` and `app/(dashboard)` UI into responsive views (Bottom Tabs on mobile portrait, Sidebar on desktop).
-- [ ] Optimize Recharts components for touch gestures and narrow portrait viewports (375px - 430px).
-
-### Phase 3: Local Database Layer (@electric-sql/pglite)
-- [ ] Integrate `@electric-sql/pglite` with IndexedDB persistence (`idb://finproject`) for full Safari & Firefox compatibility.
-- [ ] Refactor `lib/actions/*.ts` into client-side direct database queries (0ms latency, offline capable).
-- [ ] Implement database schema migration runner to apply SQL schemas on initial client boot.
-
-### Phase 4: Three-Stage AI Receipt Pipeline
-- [ ] **Stage 1 — OCR + Spatial Grouping**:
-  - [ ] Integrate iOS Live Text camera trigger via `<input type="file" capture="environment">`.
-  - [ ] Add Tesseract.js (WASM) as cross-browser fallback OCR engine.
-  - [ ] Implement Y-coordinate line grouping to produce structured `LineArray` from raw OCR bounding boxes.
-  - [ ] Build regex-based amount extractor (supports `Total`, `合计`, multi-currency) directly on OCR lines.
-- [ ] **Stage 2 — Local ML Classifier**:
-  - [ ] Integrate Transformers.js with `Xenova/bert-base-multilingual-cased-ner-hrl` (~45MB INT4).
-  - [ ] Build zero-shot classification wrapper to map extracted text to user's expense categories.
-  - [ ] Implement confidence scoring to decide whether to accept result or fall through to Stage 3.
-- [ ] **Stage 3 — Multimodal LLM Fallback**:
-  - [ ] Implement image compression (quality reduction + resize) before upload.
-  - [ ] Send compressed image + user's account list to Gemini 2.5 Flash Vision API.
-  - [ ] Parse structured JSON response and auto-populate transaction form.
-
-### Phase 5: Multi-Provider Auth & Encrypted Snapshot Cloud Sync
-- [ ] Implement OAuth flows (Google, GitHub, Microsoft) using Supabase Auth with `browser.identity.launchWebAuthFlow` / popup.
-- [ ] Develop `SyncEngine`:
-  - Debounced auto-backup of `.sql` dump to Cloudflare R2 / Supabase Storage on local changes.
-  - Snapshot download and restore flow when logging in on a new device.
-  - Implement lazy net-worth snapshot catch-up on app launch.
-
-### Phase 6: Static Deployment & Decommission
-- [ ] Deploy static PWA and marketing site to Cloudflare Pages / Vercel.
-- [ ] Verify standalone iOS Safari "Add to Home Screen" behavior and Firefox extension build.
-- [ ] Decommission Docker / VPS server infrastructure.
