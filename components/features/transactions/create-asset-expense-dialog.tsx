@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useNavigate } from 'react-router-dom';
 import { Plus } from 'lucide-react';
 import { createAssetsExpense } from '@/lib/actions/createAssetsExpense';
 import { Button } from '@/components/ui/button';
@@ -26,7 +26,7 @@ export function CreateAssetExpenseDialog({
   accountId,
   accountCurrency,
 }: CreateAssetExpenseDialogProps) {
-  const router = useRouter();
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -85,7 +85,7 @@ export function CreateAssetExpenseDialog({
               });
 
               setOpen(false);
-              router.refresh();
+              navigate(0);
             } catch (submitError) {
               setError(
                 submitError instanceof Error

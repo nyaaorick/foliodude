@@ -1,19 +1,12 @@
-'use server';
-
-import { revalidatePath } from 'next/cache';
-import { requireSessionContext } from '@/lib/supabase/server';
+import { getSessionContext } from '@/lib/db/session';
+import type { Queryable } from '@/lib/db/session';
+import { maybeOne, rows } from '@/lib/db/sql';
 import { TransactionType } from '@/lib/types/transactions';
 import { SUPPORTED_DELETE_TRANSACTION_TYPES } from '@/lib/utils/delete-support';
 
-type ActionResult<T> =
-  | { success: true; data: T }
-  | { success: false; error: string };
+type ActionResult<T> = { success: true; data: T } | { success: false; error: string };
 
-type SupabaseClient = Awaited<ReturnType<typeof requireSessionContext>>['supabase'];
-
-export type DeleteActionInput =
-  | { kind: 'account'; id: string }
-  | { kind: 'transaction'; id: string };
+export type DeleteActionInput = { kind: 'account'; id: string } | { kind: 'transaction'; id: string };
 
 interface RelatedTransactionRecord {
   id: string;
@@ -23,7 +16,7 @@ interface RelatedTransactionRecord {
   to_account: string | null;
   reference_transaction_id: string | null;
   category: string | null;
-  transaction_at: string;
+  transaction_date: string;
   created_at: string;
   memo: string | null;
   metadata: unknown;
@@ -32,7 +25,7 @@ interface RelatedTransactionRecord {
 }
 
 const TRANSACTION_SELECT_COLUMNS =
-  'id, type, amount, from_account, to_account, reference_transaction_id, category, transaction_at, created_at, memo, metadata, share_quantity, share_price';
+  'id, type, amount, from_account, to_account, reference_transaction_id, category, transaction_date, created_at, memo, metadata, share_quantity, share_price';
 const HIDDEN_MARKER = '[HIDDEN]';
 
 function fail(message: string): never {
@@ -49,7 +42,6 @@ function requireTaxExpenseTransactionId(transaction: RelatedTransactionRecord): 
   if (typeof expenseId !== 'string' || expenseId.length === 0) {
     fail(`Mileage redemption ${transaction.id} is missing tax_expense_transaction_id`);
   }
-
   return expenseId;
 }
 
@@ -63,137 +55,93 @@ function getShareAccountId(transaction: RelatedTransactionRecord): string {
   if (transaction.type === TransactionType.SHARE_BUY && transaction.to_account) {
     return transaction.to_account;
   }
-
   if (transaction.type === TransactionType.SHARE_SELL && transaction.from_account) {
     return transaction.from_account;
   }
-
   fail(`Share transaction ${transaction.id} is missing linked share account`);
 }
 
 async function fetchTransactionById(
-  supabase: Awaited<ReturnType<typeof requireSessionContext>>['supabase'],
+  db: Queryable,
   userId: string,
   id: string,
-) {
-  const { data, error } = await supabase
-    .from('transactions')
-    .select(TRANSACTION_SELECT_COLUMNS)
-    .eq('id', id)
-    .eq('user_id', userId)
-    .maybeSingle<RelatedTransactionRecord>();
-
-  if (error) {
-    fail(error.message);
-  }
-
-  if (!data) {
-    fail(`Transaction ${id} not found`);
-  }
-
+): Promise<RelatedTransactionRecord> {
+  const data = await maybeOne<RelatedTransactionRecord>(
+    db,
+    `SELECT ${TRANSACTION_SELECT_COLUMNS} FROM transactions WHERE id = $1 AND user_id = $2`,
+    [id, userId],
+  );
+  if (!data) fail(`Transaction ${id} not found`);
   return data;
 }
 
-async function fetchTransactionsByReferenceId(
-  supabase: SupabaseClient,
-  userId: string,
-  referenceId: string,
-) {
-  const { data, error } = await supabase
-    .from('transactions')
-    .select(TRANSACTION_SELECT_COLUMNS)
-    .eq('reference_transaction_id', referenceId)
-    .eq('user_id', userId)
-    .returns<RelatedTransactionRecord[]>();
-
-  if (error) {
-    fail(error.message);
-  }
-
-  return data ?? [];
+function fetchTransactionsByReferenceId(db: Queryable, userId: string, referenceId: string) {
+  return rows<RelatedTransactionRecord>(
+    db,
+    `SELECT ${TRANSACTION_SELECT_COLUMNS} FROM transactions WHERE reference_transaction_id = $1 AND user_id = $2`,
+    [referenceId, userId],
+  );
 }
 
-async function fetchDirectAccountTransactions(
-  supabase: SupabaseClient,
-  userId: string,
-  accountId: string,
-) {
-  const { data, error } = await supabase
-    .from('transactions')
-    .select(TRANSACTION_SELECT_COLUMNS)
-    .or(`from_account.eq.${accountId},to_account.eq.${accountId}`)
-    .eq('user_id', userId)
-    .returns<RelatedTransactionRecord[]>();
-
-  if (error) {
-    fail(error.message);
-  }
-
-  return data ?? [];
+function fetchDirectAccountTransactions(db: Queryable, userId: string, accountId: string) {
+  return rows<RelatedTransactionRecord>(
+    db,
+    `SELECT ${TRANSACTION_SELECT_COLUMNS} FROM transactions
+      WHERE user_id = $1 AND (from_account = $2 OR to_account = $2)`,
+    [userId, accountId],
+  );
 }
 
-async function fetchMileageRedeemFlights(
-  supabase: SupabaseClient,
-  userId: string,
-) {
-  const { data, error } = await supabase
-    .from('transactions')
-    .select(TRANSACTION_SELECT_COLUMNS)
-    .eq('type', TransactionType.MILEAGE_REDEEM_FLIGHT)
-    .eq('user_id', userId)
-    .returns<RelatedTransactionRecord[]>();
-
-  if (error) {
-    fail(error.message);
-  }
-
-  return data ?? [];
+function fetchMileageRedeemFlights(db: Queryable, userId: string) {
+  return rows<RelatedTransactionRecord>(
+    db,
+    `SELECT ${TRANSACTION_SELECT_COLUMNS} FROM transactions WHERE type = $1 AND user_id = $2`,
+    [TransactionType.MILEAGE_REDEEM_FLIGHT, userId],
+  );
 }
 
 async function assertLatestShareTrade(
-  supabase: SupabaseClient,
+  db: Queryable,
   userId: string,
   transaction: RelatedTransactionRecord,
 ) {
   const shareAccountId = getShareAccountId(transaction);
-  const { data, error } = await supabase
-    .from('transactions')
-    .select(TRANSACTION_SELECT_COLUMNS)
-    .or(`from_account.eq.${shareAccountId},to_account.eq.${shareAccountId}`)
-    .in('type', [TransactionType.SHARE_BUY, TransactionType.SHARE_SELL])
-    .eq('user_id', userId)
-    .order('transaction_at', { ascending: false })
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle<RelatedTransactionRecord>();
+  const latest = await maybeOne<RelatedTransactionRecord>(
+    db,
+    // Casting the enum column to text (rather than casting $3 to
+    // transaction_type[]) is what PGlite's array-bind parser accepts — see
+    // lib/db/sql.ts's note on enum-typed ANY() params.
+    `SELECT ${TRANSACTION_SELECT_COLUMNS} FROM transactions
+      WHERE user_id = $1 AND (from_account = $2 OR to_account = $2)
+        AND type::text = ANY($3)
+      ORDER BY transaction_date DESC, seq DESC
+      LIMIT 1`,
+    [userId, shareAccountId, [TransactionType.SHARE_BUY, TransactionType.SHARE_SELL]],
+  );
 
-  if (error) {
-    fail(error.message);
-  }
-
-  if (!data) {
-    fail(`No share trade found for account ${shareAccountId}`);
-  }
-
-  if (data.id !== transaction.id) {
+  if (!latest) fail(`No share trade found for account ${shareAccountId}`);
+  if (latest.id !== transaction.id) {
     fail('Delete action only supports deleting the latest share trade');
   }
 }
 
+/**
+ * Walk every transaction linked to the deletion target — reward earns back to
+ * their expense, reward redeems back to a mileage transfer, mileage
+ * redemptions to their tax expense, and so on — so a delete never orphans half
+ * of a linked pair. Read-only: callers apply the actual hide/delete.
+ */
 async function loadDeletionScope(
-  supabase: SupabaseClient,
+  db: Queryable,
   userId: string,
   input: DeleteActionInput,
-) {
+): Promise<Map<string, RelatedTransactionRecord>> {
   const transactions = new Map<string, RelatedTransactionRecord>();
   const processedIds = new Set<string>();
-  const mileageRedeemFlights = await fetchMileageRedeemFlights(supabase, userId);
+  const mileageRedeemFlights = await fetchMileageRedeemFlights(db, userId);
 
   const collectTransaction = async (transaction: RelatedTransactionRecord): Promise<void> => {
-    if (processedIds.has(transaction.id)) {
-      return;
-    }
-
+    if (processedIds.has(transaction.id)) return;
     processedIds.add(transaction.id);
     ensureSupportedTransactionType(transaction);
     transactions.set(transaction.id, transaction);
@@ -207,20 +155,16 @@ async function loadDeletionScope(
       case TransactionType.SHARE_BUY:
       case TransactionType.SHARE_SELL:
         if (input.kind === 'transaction') {
-          await assertLatestShareTrade(supabase, userId, transaction);
+          await assertLatestShareTrade(db, userId, transaction);
         }
         return;
       case TransactionType.REWARD_REDEEM:
-        if (!transaction.reference_transaction_id) {
-          return;
-        }
-
+        if (!transaction.reference_transaction_id) return;
         await collectTransaction(
-          await fetchTransactionById(supabase, userId, transaction.reference_transaction_id),
+          await fetchTransactionById(db, userId, transaction.reference_transaction_id),
         );
-
         for (const linked of await fetchTransactionsByReferenceId(
-          supabase,
+          db,
           userId,
           transaction.reference_transaction_id,
         )) {
@@ -231,11 +175,7 @@ async function loadDeletionScope(
         }
         return;
       case TransactionType.MILEAGE_TRANSFER_IN:
-        for (const linked of await fetchTransactionsByReferenceId(
-          supabase,
-          userId,
-          transaction.id,
-        )) {
+        for (const linked of await fetchTransactionsByReferenceId(db, userId, transaction.id)) {
           if (linked.type !== TransactionType.REWARD_REDEEM) {
             fail(`Linked transaction ${linked.id} is not a reward redeem`);
           }
@@ -246,23 +186,17 @@ async function loadDeletionScope(
         if (!transaction.reference_transaction_id) {
           fail(`Reward earn ${transaction.id} is missing its parent expense`);
         }
-
         await collectTransaction(
-          await fetchTransactionById(supabase, userId, transaction.reference_transaction_id),
+          await fetchTransactionById(db, userId, transaction.reference_transaction_id),
         );
         return;
       case TransactionType.EXPENSE:
-        for (const linked of await fetchTransactionsByReferenceId(
-          supabase,
-          userId,
-          transaction.id,
-        )) {
+        for (const linked of await fetchTransactionsByReferenceId(db, userId, transaction.id)) {
           if (linked.type !== TransactionType.REWARD_EARN) {
             fail(`Linked transaction ${linked.id} is not a reward earn`);
           }
           await collectTransaction(linked);
         }
-
         for (const linked of mileageRedeemFlights) {
           if (requireTaxExpenseTransactionId(linked) === transaction.id) {
             await collectTransaction(linked);
@@ -271,11 +205,7 @@ async function loadDeletionScope(
         return;
       case TransactionType.MILEAGE_REDEEM_FLIGHT:
         await collectTransaction(
-          await fetchTransactionById(
-            supabase,
-            userId,
-            requireTaxExpenseTransactionId(transaction),
-          ),
+          await fetchTransactionById(db, userId, requireTaxExpenseTransactionId(transaction)),
         );
         return;
       default:
@@ -284,118 +214,83 @@ async function loadDeletionScope(
   };
 
   if (input.kind === 'account') {
-    for (const transaction of await fetchDirectAccountTransactions(
-      supabase,
-      userId,
-      input.id,
-    )) {
+    for (const transaction of await fetchDirectAccountTransactions(db, userId, input.id)) {
       await collectTransaction(transaction);
     }
   } else {
-    await collectTransaction(await fetchTransactionById(supabase, userId, input.id));
+    await collectTransaction(await fetchTransactionById(db, userId, input.id));
   }
 
   return transactions;
 }
 
 function appendHiddenMarker(memo: string | null): string {
-  if (!memo) {
-    return HIDDEN_MARKER;
-  }
-
-  if (memo.includes(HIDDEN_MARKER)) {
-    return memo;
-  }
-
+  if (!memo) return HIDDEN_MARKER;
+  if (memo.includes(HIDDEN_MARKER)) return memo;
   return `${memo} ${HIDDEN_MARKER}`;
 }
 
 async function hideTransactions(
-  supabase: SupabaseClient,
+  db: Queryable,
   userId: string,
   transactions: Map<string, RelatedTransactionRecord>,
 ) {
   for (const transaction of transactions.values()) {
-    const { error } = await supabase
-      .from('transactions')
-      .update({ memo: appendHiddenMarker(transaction.memo) })
-      .eq('id', transaction.id)
-      .eq('user_id', userId);
-
-    if (error) {
-      fail(error.message);
-    }
+    await db.query('UPDATE transactions SET memo = $1 WHERE id = $2 AND user_id = $3', [
+      appendHiddenMarker(transaction.memo),
+      transaction.id,
+      userId,
+    ]);
   }
 }
 
 async function deleteTransactionsAndAccount(
-  supabase: SupabaseClient,
+  db: Queryable,
   userId: string,
   accountId: string,
   transactions: Map<string, RelatedTransactionRecord>,
 ) {
   if (transactions.size > 0) {
-    const { error } = await supabase
-      .from('transactions')
-      .delete()
-      .in('id', [...transactions.keys()])
-      .eq('user_id', userId);
-
-    if (error) {
-      fail(error.message);
-    }
+    await db.query('DELETE FROM transactions WHERE id = ANY($1) AND user_id = $2', [
+      [...transactions.keys()],
+      userId,
+    ]);
   }
-
-  const { error } = await supabase
-    .from('accounts')
-    .delete()
-    .eq('id', accountId)
-    .eq('user_id', userId);
-
-  if (error) {
-    fail(error.message);
-  }
+  await db.query('DELETE FROM accounts WHERE id = $1 AND user_id = $2', [accountId, userId]);
 }
 
+/**
+ * Delete an account or a transaction, along with everything linked to it.
+ *
+ * A transaction delete is a soft delete (memo gets `[HIDDEN]`, appended once):
+ * the row stays for referential integrity (other rows may still point at it via
+ * `reference_transaction_id`) but drops out of `loadAccountTransactions`. An
+ * account delete is a hard delete of the account and its full transaction
+ * closure. Neither path reverses the balance changes those transactions
+ * caused — this mirrors the pre-migration behavior; balance correction after a
+ * delete is a separate, not-yet-built feature.
+ */
 export async function deleteAction(input: DeleteActionInput): Promise<ActionResult<null>> {
-  const { supabase, userId } = await requireSessionContext();
+  const { db, userId } = await getSessionContext();
 
   try {
-    const transactions = await loadDeletionScope(supabase, userId, input);
-    const touchedAccountIds = new Set<string>();
+    return await db.transaction(async (tx) => {
+      const transactions = await loadDeletionScope(tx, userId, input);
 
-    if (input.kind === 'account') {
-      touchedAccountIds.add(input.id);
-    }
-
-    for (const transaction of transactions.values()) {
-      if (transaction.from_account) {
-        touchedAccountIds.add(transaction.from_account);
+      if (input.kind === 'transaction') {
+        await hideTransactions(tx, userId, transactions);
+      } else {
+        await deleteTransactionsAndAccount(tx, userId, input.id, transactions);
       }
-      if (transaction.to_account) {
-        touchedAccountIds.add(transaction.to_account);
-      }
-    }
 
-    if (input.kind === 'transaction') {
-      await hideTransactions(supabase, userId, transactions);
-    } else {
-      await deleteTransactionsAndAccount(supabase, userId, input.id, transactions);
-    }
-
-    revalidatePath('/dashboard');
-    revalidatePath('/accounts');
-    for (const accountId of touchedAccountIds) {
-      revalidatePath(`/accounts/${accountId}`);
-    }
+      return { success: true as const, data: null };
+    });
   } catch (error) {
     if (error instanceof Error) {
       return { success: false, error: error.message };
     }
     throw error;
   }
-
-  return { success: true, data: null };
 }
 
 export async function deleteAccount(id: string) {

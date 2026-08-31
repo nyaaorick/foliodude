@@ -35,6 +35,14 @@ vi.mock('@/lib/actions/account-read-actions', () => ({
   getAccounts: mockGetAccounts,
 }));
 
+vi.mock('@/lib/db/session', () => ({
+  getSessionContext: vi.fn().mockResolvedValue({ db: {}, userId: 'user-1' }),
+}));
+
+vi.mock('@/lib/db/settings', () => ({
+  getApiKey: vi.fn().mockResolvedValue('test-gemini-key'),
+}));
+
 import {
   createByIntentFromImage,
   createByIntentFromText,
@@ -43,12 +51,6 @@ import {
 const LIABILITY_ACCOUNT_ID = '22222222-2222-4222-8222-222222222222';
 const ASSET_ACCOUNT_ID = '11111111-1111-4111-8111-111111111111';
 const CREATED_ACCOUNT_ID = '99999999-9999-4999-8999-999999999999';
-
-function shanghaiMidnightUtcIso(date: string) {
-  const [year, month, day] = date.split('-').map(Number);
-  return new Date(Date.UTC(year, month - 1, day, 0, 0, 0, 0) - 8 * 60 * 60 * 1000)
-    .toISOString();
-}
 
 function makeGeminiResponse(text: string) {
   return {
@@ -100,7 +102,7 @@ describe('createByIntent AI flows', () => {
         shares: 0,
         cost_basis: 0,
         last_price: null,
-        last_price_at: null,
+        last_price_date: null,
         reward_rules: [],
         spend_stats: {},
         auto_pay_config: null,
@@ -127,7 +129,7 @@ describe('createByIntent AI flows', () => {
         shares: 0,
         cost_basis: 0,
         last_price: null,
-        last_price_at: null,
+        last_price_date: null,
         reward_rules: [],
         spend_stats: {},
         auto_pay_config: null,
@@ -194,7 +196,7 @@ describe('createByIntent AI flows', () => {
       category: 'Dining',
       amount: 18.5,
       memo: 'Lunch',
-      date: shanghaiMidnightUtcIso('2026-03-21'),
+      date: '2026-03-21',
     });
     expect(result.intent).toBe('create_expense');
     expect(result.entityId).toBe('expense-1');
@@ -227,7 +229,7 @@ describe('createByIntent AI flows', () => {
       accountId: ASSET_ACCOUNT_ID,
       amount: 12.75,
       memo: 'Coffee',
-      date: shanghaiMidnightUtcIso('2026-03-21'),
+      date: '2026-03-21',
     });
     expect(result.intent).toBe('create_assets_expense');
     expect(result.entityId).toBe('asset-expense-1');
@@ -352,7 +354,7 @@ describe('createByIntent AI flows', () => {
       category: 'Dining',
       amount: 35.6,
       memo: 'Dinner',
-      date: shanghaiMidnightUtcIso('2026-03-21'),
+      date: '2026-03-21',
     });
     expect(result.intent).toBe('create_expense');
     expect(result.steps).toHaveLength(2);
@@ -411,7 +413,7 @@ describe('createByIntent AI flows', () => {
       category: 'Transit',
       amount: 23.45,
       memo: 'Uber',
-      date: shanghaiMidnightUtcIso('2026-03-20'),
+      date: '2026-03-20',
     });
     expect(result.ocrText).toContain('AMEX GOLD');
     expect(result.normalizedText).toContain('merchant: Uber');
@@ -570,7 +572,7 @@ describe('createByIntent AI flows', () => {
       accountId: ASSET_ACCOUNT_ID,
       amount: 16.64,
       memo: 'Haikou Meilan Jingshangdao Korean Food House',
-      date: shanghaiMidnightUtcIso('2026-03-10'),
+      date: '2026-03-10',
     });
     expect(result.steps).toHaveLength(1);
     expect(result.steps[0].intent).toBe('create_assets_expense');
@@ -625,7 +627,7 @@ describe('createByIntent AI flows', () => {
       accountId: ASSET_ACCOUNT_ID,
       amount: 9.25,
       memo: 'Coffee Bean',
-      date: shanghaiMidnightUtcIso('2026-03-20'),
+      date: '2026-03-20',
     });
     expect(result.userInstruction).toBe('my debit account is BoA Checking');
     expect(result.steps).toHaveLength(1);
@@ -700,7 +702,7 @@ describe('createByIntent AI flows', () => {
       category: 'Shopping',
       amount: 8030,
       memo: 'China Duty Free',
-      date: shanghaiMidnightUtcIso('2026-03-05'),
+      date: '2026-03-05',
     });
   });
 
@@ -930,7 +932,7 @@ describe('createByIntent AI flows', () => {
       category: 'Dining',
       amount: 8.25,
       memo: 'Starbucks',
-      date: shanghaiMidnightUtcIso('2026-03-20'),
+      date: '2026-03-20',
     });
     expect(result.steps).toHaveLength(2);
     expect(result.steps[0].intent).toBe('create_account');

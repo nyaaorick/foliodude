@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useNavigate } from 'react-router-dom';
 import { applyCloudRewardRules } from '@/lib/actions/reward-actions';
 import type { RewardRuleSet } from '@/lib/types/rewards';
 import { Button } from '@/components/ui/button';
@@ -32,7 +32,7 @@ export function ApplyCloudRulesDialog({
   accountId,
   ruleSets,
 }: ApplyCloudRulesDialogProps) {
-  const router = useRouter();
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [selectedRuleSetId, setSelectedRuleSetId] = useState(ruleSets[0]?.id ?? '');
   const [submitting, setSubmitting] = useState(false);
@@ -53,7 +53,7 @@ export function ApplyCloudRulesDialog({
       });
 
       setOpen(false);
-      router.refresh();
+      navigate(0);
     } catch (error) {
       if (!(error instanceof Error)) {
         throw error;

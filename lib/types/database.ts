@@ -32,7 +32,7 @@ export type Database = {
           shares:          number
           cost_basis:      number
           last_price:      number | null
-          last_price_at:   string | null
+          last_price_date:   string | null
           reward_rules:    Json
           spend_stats:     Json
           auto_pay_config: Json | null
@@ -58,7 +58,7 @@ export type Database = {
           shares?:         number
           cost_basis?:     number
           last_price?:     number | null
-          last_price_at?:  string | null
+          last_price_date?:  string | null
           reward_rules?:   Json
           spend_stats?:    Json
           auto_pay_config?: Json | null
@@ -84,7 +84,7 @@ export type Database = {
           shares?:         number
           cost_basis?:     number
           last_price?:     number | null
-          last_price_at?:  string | null
+          last_price_date?:  string | null
           reward_rules?:   Json
           spend_stats?:    Json
           auto_pay_config?: Json | null
@@ -117,7 +117,6 @@ export type Database = {
           id: string
           user_id: string
           snapshot_date: string
-          snapshot_at: string
           net_worth_usd: number
           assets_usd: number
           liabilities_usd: number
@@ -129,7 +128,6 @@ export type Database = {
           id?: string
           user_id: string
           snapshot_date: string
-          snapshot_at?: string
           net_worth_usd?: number
           assets_usd?: number
           liabilities_usd?: number
@@ -141,7 +139,6 @@ export type Database = {
           id?: string
           user_id?: string
           snapshot_date?: string
-          snapshot_at?: string
           net_worth_usd?: number
           assets_usd?: number
           liabilities_usd?: number
@@ -168,7 +165,7 @@ export type Database = {
           share_quantity: number | null
           share_price:    number | null
           fee:            number | null
-          transaction_at: string
+          transaction_date: string
           created_at:     string
         }
         Insert: {
@@ -188,7 +185,7 @@ export type Database = {
           share_quantity?: number | null
           share_price?:   number | null
           fee?:           number | null
-          transaction_at: string
+          transaction_date: string
           created_at?:    string
         }
         Update: {
@@ -208,7 +205,7 @@ export type Database = {
           share_quantity?: number | null
           share_price?:   number | null
           fee?:           number | null
-          transaction_at?: string
+          transaction_date?: string
           created_at?:    string
         }
       }

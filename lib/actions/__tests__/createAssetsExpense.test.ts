@@ -1,162 +1,73 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { AccountType } from '@/lib/types/accounts';
 
-const { mockCreateClient, mockRevalidatePath } = vi.hoisted(() => ({
-  mockCreateClient: vi.fn(),
-  mockRevalidatePath: vi.fn(),
-}));
-
-vi.mock('@/lib/supabase/server', () => ({
-  createClient: mockCreateClient,
-}));
-
-vi.mock('next/cache', () => ({
-  revalidatePath: mockRevalidatePath,
-}));
+const { mockGetSessionContext } = vi.hoisted(() => ({ mockGetSessionContext: vi.fn() }));
+vi.mock('@/lib/db/session', () => ({ getSessionContext: mockGetSessionContext }));
 
 import { createAssetsExpense } from '@/lib/actions/createAssetsExpense';
+import { allTransactions, createTestContext, getAccount, seedAccount } from '@/lib/db/testing';
+import type { SessionContext } from '@/lib/db/session';
 
-const USER_ID = 'user-1';
-const ACCOUNT_ID = '11111111-1111-4111-8111-111111111111';
-
-function createSupabaseMock(options?: {
-  accountType?: AccountType;
-  balance?: number;
-  currency?: string;
-}) {
-  const insertedTransactions: Array<Record<string, unknown>> = [];
-  const accountUpdates: Array<Record<string, unknown>> = [];
-  const accountRow = {
-    balance: options?.balance ?? 100,
-    currency: options?.currency ?? 'USD',
-    type: options?.accountType ?? AccountType.ASSET,
-  };
-
-  const accountsTable = {
-    select: vi.fn(() => ({
-      eq() {
-        return this;
-      },
-      single: vi.fn().mockResolvedValue({ data: accountRow, error: null }),
-    })),
-    update: vi.fn((payload: Record<string, unknown>) => {
-      accountUpdates.push(payload);
-      return {
-        eq() {
-          return this;
-        },
-        then(resolve: (value: { error: null }) => unknown) {
-          return Promise.resolve(resolve({ error: null }));
-        },
-      };
-    }),
-  };
-
-  const transactionsTable = {
-    insert: vi.fn((payload: Record<string, unknown>) => {
-      insertedTransactions.push(payload);
-      return {
-        select() {
-          return this;
-        },
-        single() {
-          return Promise.resolve({
-            data: { id: 'asset-expense-1' },
-            error: null,
-          });
-        },
-      };
-    }),
-  };
-
-  return {
-    insertedTransactions,
-    accountUpdates,
-    supabase: {
-      auth: {
-        getUser: vi.fn().mockResolvedValue({
-          data: { user: { id: USER_ID } },
-        }),
-      },
-      from: vi.fn((table: string) => {
-        if (table === 'accounts') return accountsTable;
-        if (table === 'transactions') return transactionsTable;
-        throw new Error(`Unexpected table: ${table}`);
-      }),
-    },
-  };
-}
+const DATE = '2026-03-16';
 
 describe('createAssetsExpense', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+  let ctx: SessionContext;
+
+  beforeEach(async () => {
+    ctx = await createTestContext();
+    mockGetSessionContext.mockResolvedValue(ctx);
   });
 
   it('creates an asset expense with fixed expense semantics', async () => {
-    const { insertedTransactions, accountUpdates, supabase } = createSupabaseMock({
-      balance: 100,
-    });
-    mockCreateClient.mockResolvedValue(supabase);
+    const accountId = await seedAccount(ctx, { type: 'ASSET', currency: 'USD', balance: 100 });
 
     const result = await createAssetsExpense({
-      accountId: ACCOUNT_ID,
+      accountId,
       amount: 12.5,
-      memo: 'Lunch',
-      date: '2026-03-16T00:00:00.000Z',
+      memo: '  Coffee  ',
+      date: DATE,
     });
 
     expect(result).toEqual({
-      expense_id: 'asset-expense-1',
+      expense_id: expect.any(String),
       reward_id: null,
       reward_points: 0,
     });
-    expect(insertedTransactions).toHaveLength(1);
-    expect(insertedTransactions[0]).toMatchObject({
-      user_id: USER_ID,
+
+    const rows = await allTransactions(ctx.db);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
       type: 'EXPENSE',
-      amount: 12.5,
       currency: 'USD',
       reward_currency: null,
-      metadata: {},
-      reference_transaction_id: null,
-      from_account: ACCOUNT_ID,
-      to_account: null,
       category: 'Other',
-      memo: 'Lunch',
-      transaction_at: '2026-03-16T00:00:00.000Z',
+      memo: 'Coffee',
+      from_account: accountId,
+      to_account: null,
+      transaction_date: DATE,
     });
-    expect(accountUpdates).toEqual([{ balance: 87.5 }]);
-    expect(accountUpdates[0]).not.toHaveProperty('reward_balance');
-    expect(accountUpdates[0]).not.toHaveProperty('spend_stats');
-    expect(mockRevalidatePath).toHaveBeenCalledWith('/accounts');
-    expect(mockRevalidatePath).toHaveBeenCalledWith(`/accounts/${ACCOUNT_ID}`);
+
+    const account = await getAccount(ctx.db, accountId);
+    expect(Number(account.balance)).toBe(87.5);
+    // Asset spending never touches reward state.
+    expect(account.reward_balance).toBe(0);
+    expect(account.spend_stats).toEqual({});
   });
 
   it('rejects non-asset accounts', async () => {
-    const { supabase } = createSupabaseMock({
-      accountType: AccountType.LIABILITY,
-    });
-    mockCreateClient.mockResolvedValue(supabase);
+    const accountId = await seedAccount(ctx, { type: 'LIABILITY', balance: 100 });
 
     await expect(
-      createAssetsExpense({
-        accountId: ACCOUNT_ID,
-        amount: 12.5,
-        date: '2026-03-16T00:00:00.000Z',
-      }),
+      createAssetsExpense({ accountId, amount: 10, date: DATE }),
     ).rejects.toThrow('Account must be an asset account');
+
+    expect(await allTransactions(ctx.db)).toHaveLength(0);
   });
 
   it('rejects invalid amount', async () => {
-    const { supabase } = createSupabaseMock();
-    mockCreateClient.mockResolvedValue(supabase);
+    const accountId = await seedAccount(ctx, { type: 'ASSET' });
 
     await expect(
-      createAssetsExpense({
-        accountId: ACCOUNT_ID,
-        amount: 0,
-        date: '2026-03-16T00:00:00.000Z',
-      }),
+      createAssetsExpense({ accountId, amount: 0, date: DATE }),
     ).rejects.toThrow('Amount must be greater than 0');
   });
 });

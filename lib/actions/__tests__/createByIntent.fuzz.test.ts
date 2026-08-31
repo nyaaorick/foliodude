@@ -40,6 +40,14 @@ vi.mock('@/lib/actions/account-read-actions', () => ({
   getAccounts: mockGetAccounts,
 }));
 
+vi.mock('@/lib/db/session', () => ({
+  getSessionContext: vi.fn().mockResolvedValue({ db: {}, userId: 'user-1' }),
+}));
+
+vi.mock('@/lib/db/settings', () => ({
+  getApiKey: vi.fn().mockResolvedValue('test-gemini-key'),
+}));
+
 import { createByIntentFromText } from '@/lib/actions/createByIntent';
 
 const ASSET_ACCOUNTS = [
@@ -74,7 +82,7 @@ const ACCOUNT_ROWS = [
     shares: 0,
     cost_basis: 0,
     last_price: null,
-    last_price_at: null,
+    last_price_date: null,
     reward_rules: [],
     spend_stats: {},
     auto_pay_config: null,
@@ -101,7 +109,7 @@ const ACCOUNT_ROWS = [
     shares: 0,
     cost_basis: 0,
     last_price: null,
-    last_price_at: null,
+    last_price_date: null,
     reward_rules: [],
     spend_stats: {},
     auto_pay_config: null,

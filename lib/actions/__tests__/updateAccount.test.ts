@@ -1,200 +1,87 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { AccountType } from '@/lib/types/accounts';
 
-const { mockCreateClient, mockRevalidatePath } = vi.hoisted(() => ({
-  mockCreateClient: vi.fn(),
-  mockRevalidatePath: vi.fn(),
-}));
+const { mockGetSessionContext } = vi.hoisted(() => ({ mockGetSessionContext: vi.fn() }));
+vi.mock('@/lib/db/session', () => ({ getSessionContext: mockGetSessionContext }));
 
-vi.mock('@/lib/supabase/server', () => ({
-  createClient: mockCreateClient,
-}));
-
-vi.mock('next/cache', () => ({
-  revalidatePath: mockRevalidatePath,
-}));
-
-import {
-  setAssetApy,
-  updateAccount,
-} from '@/lib/actions/update-accounts-actions';
-
-const USER_ID = 'user-1';
-const ACCOUNT_ID = '11111111-1111-4111-8111-111111111111';
-
-function createSupabaseMock(
-  accountType: AccountType,
-  autoPayConfig: Record<string, unknown> | null = null,
-) {
-  const accountUpdates: Array<Record<string, unknown>> = [];
-
-  const accountsTable = {
-    select: vi.fn(() => ({
-      eq() {
-        return this;
-      },
-      single: vi.fn().mockResolvedValue({
-        data: {
-          id: ACCOUNT_ID,
-          type: accountType,
-          auto_pay_config: autoPayConfig,
-        },
-        error: null,
-      }),
-    })),
-    update: vi.fn((payload: Record<string, unknown>) => {
-      accountUpdates.push(payload);
-
-      return {
-        eq() {
-          return this;
-        },
-        select() {
-          return this;
-        },
-        single() {
-          return Promise.resolve({
-            data: {
-              id: ACCOUNT_ID,
-              name: payload.name,
-              balance: payload.balance ?? 0,
-              auto_pay_config: payload.auto_pay_config ?? autoPayConfig,
-            },
-            error: null,
-          });
-        },
-      };
-    }),
-  };
-
-  return {
-    accountUpdates,
-    supabase: {
-      auth: {
-        getUser: vi.fn().mockResolvedValue({
-          data: { user: { id: USER_ID } },
-        }),
-      },
-      from: vi.fn((table: string) => {
-        if (table === 'accounts') {
-          return accountsTable;
-        }
-
-        throw new Error(`Unexpected table: ${table}`);
-      }),
-    },
-  };
-}
+import { setAssetApy, updateAccount } from '@/lib/actions/update-accounts-actions';
+import { createTestContext, getAccount, seedAccount } from '@/lib/db/testing';
+import type { SessionContext } from '@/lib/db/session';
 
 describe('updateAccount', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+  let ctx: SessionContext;
+
+  beforeEach(async () => {
+    ctx = await createTestContext();
+    mockGetSessionContext.mockResolvedValue(ctx);
   });
 
   it('supports name-only edits', async () => {
-    const { accountUpdates, supabase } = createSupabaseMock(AccountType.ASSET);
-    mockCreateClient.mockResolvedValue(supabase);
-
-    const result = await updateAccount({
-      id: ACCOUNT_ID,
-      name: 'Renamed Account',
-    });
-
-    expect(result).toMatchObject({
-      id: ACCOUNT_ID,
-      name: 'Renamed Account',
-      balance: 0,
-    });
-    expect(accountUpdates[0]).toEqual({
-      name: 'Renamed Account',
+    const id = await seedAccount(ctx, { name: 'Old', type: 'ASSET', balance: 42.5 });
+    expect(await updateAccount({ id, name: '  New  ' })).toMatchObject({
+      id,
+      name: 'New',
+      balance: 42.5,
     });
   });
 
   it('supports decimal balance edits for money accounts', async () => {
-    const { accountUpdates, supabase } = createSupabaseMock(AccountType.LIABILITY);
-    mockCreateClient.mockResolvedValue(supabase);
+    const id = await seedAccount(ctx, { type: 'ASSET', balance: 0 });
+    expect((await updateAccount({ id, name: 'Savings', balance: 1234.56 })).balance).toBe(1234.56);
+    expect((await getAccount(ctx.db, id)).balance).toBe(1234.56);
+  });
 
-    const result = await updateAccount({
-      id: ACCOUNT_ID,
-      name: 'Card',
-      balance: -123.45,
-    });
-
-    expect(result).toMatchObject({
-      id: ACCOUNT_ID,
-      name: 'Card',
-      balance: -123.45,
-    });
-    expect(accountUpdates[0]).toEqual({
-      name: 'Card',
-      balance: -123.45,
-    });
+  it('rejects balances with more than two decimal places', async () => {
+    const id = await seedAccount(ctx, { type: 'ASSET' });
+    await expect(updateAccount({ id, name: 'Savings', balance: 1.234 })).rejects.toThrow(
+      'Balance must have at most 2 decimal places',
+    );
   });
 
   it('rejects fractional mileage balances', async () => {
-    const { supabase } = createSupabaseMock(AccountType.AIRLINE_MILES);
-    mockCreateClient.mockResolvedValue(supabase);
-
-    await expect(
-      updateAccount({
-        id: ACCOUNT_ID,
-        name: 'Miles',
-        balance: 1234.5,
-      }),
-    ).rejects.toThrow('Mileage balances must be whole numbers');
+    const id = await seedAccount(ctx, {
+      type: 'AIRLINE_MILES',
+      currency: 'USD',
+      airline_program: 'KRISFLYER',
+    });
+    await expect(updateAccount({ id, name: 'Miles', balance: 10.5 })).rejects.toThrow(
+      'Mileage balances must be whole numbers',
+    );
   });
 
   it('rejects share balance edits', async () => {
-    const { supabase } = createSupabaseMock(AccountType.SHARE);
-    mockCreateClient.mockResolvedValue(supabase);
-
-    await expect(
-      updateAccount({
-        id: ACCOUNT_ID,
-        name: 'Brokerage',
-        balance: 5000,
-      }),
-    ).rejects.toThrow('Share account balances cannot be edited directly');
+    const brokerageId = await seedAccount(ctx, { type: 'ASSET', name: 'Broker' });
+    const id = await seedAccount(ctx, {
+      type: 'SHARE',
+      currency: 'USD',
+      brokerage: 'IBKR',
+      ticker: 'AAPL',
+      brokerage_account_id: brokerageId,
+    });
+    await expect(updateAccount({ id, name: 'AAPL', balance: 10 })).rejects.toThrow(
+      'Share account balances cannot be edited directly',
+    );
   });
 
-  it('sets asset APY by updating auto_pay_config.asset_apy', async () => {
-    const { accountUpdates, supabase } = createSupabaseMock(
-      AccountType.ASSET,
-      { existing_flag: true },
-    );
-    mockCreateClient.mockResolvedValue(supabase);
+  it('merges asset APY into auto_pay_config without dropping siblings', async () => {
+    const id = await seedAccount(ctx, {
+      type: 'ASSET',
+      auto_pay_config: { existing_key: 'kept' },
+    });
+    expect((await setAssetApy({ id, apy: 4.256 })).auto_pay_config).toEqual({
+      existing_key: 'kept',
+      asset_apy: 4.26,
+    });
+  });
 
-    const result = await setAssetApy({
-      id: ACCOUNT_ID,
-      apy: 3.456,
-    });
-
-    expect(result).toEqual({
-      id: ACCOUNT_ID,
-      name: undefined,
-      balance: 0,
-      auto_pay_config: {
-        existing_flag: true,
-        asset_apy: 3.46,
-      },
-    });
-    expect(accountUpdates[0]).toEqual({
-      auto_pay_config: {
-        existing_flag: true,
-        asset_apy: 3.46,
-      },
-    });
+  it('sets asset APY when auto_pay_config is null', async () => {
+    const id = await seedAccount(ctx, { type: 'ASSET' });
+    expect((await setAssetApy({ id, apy: 3 })).auto_pay_config).toEqual({ asset_apy: 3 });
   });
 
   it('rejects APY updates for non-asset accounts', async () => {
-    const { supabase } = createSupabaseMock(AccountType.LIABILITY);
-    mockCreateClient.mockResolvedValue(supabase);
-
-    await expect(
-      setAssetApy({
-        id: ACCOUNT_ID,
-        apy: 2.5,
-      }),
-    ).rejects.toThrow('APY can only be set on asset accounts');
+    const id = await seedAccount(ctx, { type: 'LIABILITY' });
+    await expect(setAssetApy({ id, apy: 1 })).rejects.toThrow(
+      'APY can only be set on asset accounts',
+    );
   });
 });

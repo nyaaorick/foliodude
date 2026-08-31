@@ -1,9 +1,8 @@
-'use server';
-
 import { z } from 'zod';
 import Decimal from 'decimal.js';
-import { revalidatePath } from 'next/cache';
-import { requireSessionContext } from '@/lib/supabase/server';
+import { getSessionContext } from '@/lib/db/session';
+import type { Queryable } from '@/lib/db/session';
+import { one } from '@/lib/db/sql';
 import {
   buildStatsKey,
   calculateReward,
@@ -23,7 +22,7 @@ const CreateExpenseSchema = z.object({
   category: z.string().min(1),
   amount: z.number().finite().gt(0),
   memo: z.string().optional(),
-  date: z.string().datetime(),
+  date: z.string().date(),
 });
 
 type CreateExpenseInput = z.infer<typeof CreateExpenseSchema>;
@@ -35,14 +34,30 @@ interface CreateExpenseResult {
   reward?: RewardResult;
 }
 
-export async function createTransaction(
+interface AccountRow {
+  balance: number;
+  currency: string;
+  reward_currency: string | null;
+  reward_balance: number;
+  reward_rules: RewardRule[] | null;
+  spend_stats: SpendStats | null;
+}
+
+/**
+ * Expense-logging logic, callable standalone (wrapped in its own transaction by
+ * `createTransaction`) or from inside a caller's existing transaction — e.g.
+ * `redeemMileageFlight` needs its own mileage debit to commit atomically with
+ * this expense, and PGlite has no nested-transaction support to open a second
+ * one with.
+ */
+export async function createTransactionWithinTransaction(
+  db: Queryable,
+  userId: string,
   input: CreateExpenseInput,
 ): Promise<CreateExpenseResult> {
-  const { supabase, userId } = await requireSessionContext();
-
   const parsed = CreateExpenseSchema.safeParse(input);
   if (!parsed.success) {
-    throw new Error(parsed.error.issues[0].message);
+    throw new Error(parsed.error.issues[0]?.message ?? 'Invalid expense input');
   }
   const {
     accountId,
@@ -53,19 +68,17 @@ export async function createTransaction(
   } = parsed.data;
   const amount = normalizeMoneyAmount(rawAmount);
 
-  const { data: account, error: accountError } = await supabase
-    .from('accounts')
-    .select('balance, currency, reward_currency, reward_balance, reward_rules, spend_stats')
-    .eq('id', accountId)
-    .eq('user_id', userId)
-    .single();
+  const account = await one<AccountRow>(
+    db,
+    `SELECT balance, currency, reward_currency, reward_balance, reward_rules, spend_stats
+       FROM accounts
+      WHERE id = $1 AND user_id = $2`,
+    [accountId, userId],
+    'Account not found',
+  );
 
-  if (accountError || !account) {
-    throw new Error(accountError?.message ?? 'Account not found');
-  }
-
-  const rules = (account.reward_rules ?? []) as RewardRule[];
-  const currentStats = (account.spend_stats ?? {}) as SpendStats;
+  const rules = account.reward_rules ?? [];
+  const currentStats = account.spend_stats ?? {};
   const rewardCurrency = isRewardCurrencyId(account.reward_currency ?? '')
     ? account.reward_currency
     : null;
@@ -90,88 +103,84 @@ export async function createTransaction(
   const nextBalance = new Decimal(account.balance).minus(amount).toNumber();
   const normalizedMemo = memo?.trim() ? memo.trim() : null;
 
-  const { data: expenseRow, error: expenseError } = await supabase
-    .from('transactions')
-    .insert({
-      user_id: userId,
-      type: TransactionType.EXPENSE,
+  const expense = await one<{ id: string }>(
+    db,
+    `INSERT INTO transactions
+       (user_id, type, amount, currency, reward_currency, metadata,
+        reference_transaction_id, from_account, to_account, category, memo, transaction_date)
+     VALUES ($1, $2, $3, $4, NULL, '{}'::jsonb, NULL, $5, NULL, $6, $7, $8)
+     RETURNING id`,
+    [
+      userId,
+      TransactionType.EXPENSE,
       amount,
-      currency: account.currency as string,
-      reward_currency: null,
-      metadata: {},
-      reference_transaction_id: null,
-      from_account: accountId,
-      to_account: null,
+      account.currency,
+      accountId,
       category,
-      memo: normalizedMemo,
-      transaction_at: date,
-    })
-    .select('id')
-    .single();
+      normalizedMemo,
+      date,
+    ],
+    'Failed to create expense transaction',
+  );
 
-  if (expenseError || !expenseRow) {
-    throw new Error(expenseError?.message ?? 'Failed to create expense transaction');
-  }
-
-  const { error: balanceError } = await supabase
-    .from('accounts')
-    .update({ balance: nextBalance })
-    .eq('id', accountId)
-    .eq('user_id', userId);
-
-  if (balanceError) {
-    throw new Error(balanceError.message);
-  }
+  await db.query('UPDATE accounts SET balance = $1 WHERE id = $2 AND user_id = $3', [
+    nextBalance,
+    accountId,
+    userId,
+  ]);
 
   let rewardId: string | null = null;
 
   if (rewardCurrency && rewardResult.points > 0) {
-    const { data: rewardRow, error: rewardError } = await supabase
-      .from('transactions')
-      .insert({
-        user_id: userId,
-        type: TransactionType.REWARD_EARN,
-        amount: rewardResult.points,
-        currency: null,
-        reward_currency: rewardCurrency,
-        metadata: {},
-        reference_transaction_id: expenseRow.id,
-        from_account: null,
-        to_account: accountId,
+    const reward = await one<{ id: string }>(
+      db,
+      `INSERT INTO transactions
+         (user_id, type, amount, currency, reward_currency, metadata,
+          reference_transaction_id, from_account, to_account, category, memo, transaction_date)
+       VALUES ($1, $2, $3, NULL, $4, '{}'::jsonb, $5, NULL, $6, $7, $8, $9)
+       RETURNING id`,
+      [
+        userId,
+        TransactionType.REWARD_EARN,
+        rewardResult.points,
+        rewardCurrency,
+        expense.id,
+        accountId,
         category,
-        memo: normalizedMemo,
-        transaction_at: date,
-      })
-      .select('id')
-      .single();
+        normalizedMemo,
+        date,
+      ],
+      'Failed to create reward transaction',
+    );
 
-    if (rewardError || !rewardRow) {
-      throw new Error(rewardError?.message ?? 'Failed to create reward transaction');
-    }
+    rewardId = reward.id;
 
-    rewardId = rewardRow.id;
-
-    const { error: rewardUpdateError } = await supabase
-      .from('accounts')
-      .update({
-        reward_balance: updatedRewardBalance,
-        spend_stats: updatedStats,
-      })
-      .eq('id', accountId)
-      .eq('user_id', userId);
-
-    if (rewardUpdateError) {
-      throw new Error(rewardUpdateError.message);
-    }
+    await db.query(
+      `UPDATE accounts SET reward_balance = $1, spend_stats = $2 WHERE id = $3 AND user_id = $4`,
+      [updatedRewardBalance, JSON.stringify(updatedStats), accountId, userId],
+    );
   }
 
-  revalidatePath('/accounts');
-  revalidatePath(`/accounts/${accountId}`);
-
   return {
-    expense_id: expenseRow.id,
+    expense_id: expense.id,
     reward_id: rewardId,
     reward_points: rewardResult.points,
     reward: rewardResult.points > 0 ? rewardResult : undefined,
   };
+}
+
+/**
+ * Log an expense, and the reward it earns, as one atomic write.
+ *
+ * The expense, the balance decrement, the reward transaction and the reward
+ * balance/stats update all commit together. Under the previous Supabase client
+ * these were four separate round-trips, so a failure between them could leave
+ * an expense with no matching reward, or a reward whose points were never
+ * credited.
+ */
+export async function createTransaction(
+  input: CreateExpenseInput,
+): Promise<CreateExpenseResult> {
+  const { db, userId } = await getSessionContext();
+  return db.transaction((tx) => createTransactionWithinTransaction(tx, userId, input));
 }

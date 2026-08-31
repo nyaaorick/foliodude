@@ -85,7 +85,7 @@ export function mapAccountRowToAccount(row: AccountRow): Account {
     shares: row.shares ?? 0,
     cost_basis: row.cost_basis ?? 0,
     last_price: row.last_price ?? null,
-    last_price_at: row.last_price_at ?? null,
+    last_price_date: row.last_price_date ?? null,
     reward_rules: ((row.reward_rules ?? []) as unknown) as Account['reward_rules'],
     spend_stats: ((row.spend_stats ?? {}) as unknown) as Account['spend_stats'],
     auto_pay_config: row.auto_pay_config,
@@ -297,7 +297,7 @@ export interface ExpenseRow {
   amount: number;
   currency: string | null;
   category: string | null;
-  transaction_at: string;
+  transaction_date: string;
 }
 
 function toMonthKey(value: string) {
@@ -315,7 +315,7 @@ export function buildMonthlyExpenseSeries(
   const categorySet = new Set<string>();
 
   for (const expense of expenses) {
-    const month = toMonthKey(expense.transaction_at);
+    const month = toMonthKey(expense.transaction_date);
     const category = expense.category?.trim() || 'Other';
     const currency = expense.currency?.trim().toUpperCase() || 'USD';
     const usdAmount = roundUsd(

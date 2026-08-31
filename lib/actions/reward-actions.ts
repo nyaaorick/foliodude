@@ -1,13 +1,9 @@
-'use server';
-
 import Decimal from 'decimal.js';
-import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 import { getCloudRewardRuleSet } from '@/lib/data/cloud-rules';
-import {
-  requireSessionContext,
-  type RequestSessionContext,
-} from '@/lib/supabase/server';
+import { getSessionContext } from '@/lib/db/session';
+import { one, rows } from '@/lib/db/sql';
+import type { Queryable } from '@/lib/db/session';
 import type { RewardRateRow } from '@/lib/types/database';
 import {
   isRewardCurrencyId,
@@ -19,10 +15,7 @@ import {
   type RewardRuleSet,
 } from '@/lib/types/rewards';
 import { TransactionType, type Transaction } from '@/lib/types/transactions';
-import {
-  buildRewardRateMapStrict,
-  normalizeMoneyAmount,
-} from '@/lib/utils/financial-analytics';
+import { buildRewardRateMapStrict, normalizeMoneyAmount } from '@/lib/utils/financial-analytics';
 import { normalizeRewardRuleSet, parseRewardRuleSet } from '@/lib/utils/reward-rule-schema';
 
 const RewardTransactionSchema = z.object({
@@ -30,7 +23,7 @@ const RewardTransactionSchema = z.object({
   type: z.enum([TransactionType.REWARD_TRANSFER_IN, TransactionType.REWARD_REDEEM]),
   amount: z.number().int().positive(),
   memo: z.string().optional(),
-  date: z.string().datetime(),
+  date: z.string().date(),
 });
 
 const UpdateRewardRateSchema = z.object({
@@ -57,249 +50,188 @@ const ApplyCloudRewardRulesSchema = z.object({
   ruleSetId: z.string().trim().min(1),
 });
 
-type SupabaseServerClient = RequestSessionContext['supabase'];
-
-type RewardAccountRow = {
+interface RewardAccountRow {
   id: string;
   type: string;
   reward_currency: string | null;
-  reward_balance: number | null;
-  reward_rules?: unknown;
-};
-
-async function getAuthenticatedContext() {
-  return requireSessionContext();
-}
-
-function revalidateRewardPages(accountId?: string) {
-  revalidatePath('/accounts');
-
-  if (accountId) {
-    revalidatePath(`/accounts/${accountId}`);
-  }
+  reward_balance: number;
+  reward_rules: RewardRule[];
 }
 
 async function requireRewardAccount(
-  supabase: SupabaseServerClient,
+  db: Queryable,
   userId: string,
   accountId: string,
 ): Promise<RewardAccountRow> {
-  const { data, error } = await supabase
-    .from('accounts')
-    .select('id, type, reward_currency, reward_balance, reward_rules')
-    .eq('id', accountId)
-    .eq('user_id', userId)
-    .single();
-
-  if (error) {
-    throw new Error(error.message);
-  }
-
-  if (data.type !== 'LIABILITY') {
+  const account = await one<RewardAccountRow>(
+    db,
+    'SELECT id, type, reward_currency, reward_balance, reward_rules FROM accounts WHERE id = $1 AND user_id = $2',
+    [accountId, userId],
+    'Account not found',
+  );
+  if (account.type !== 'LIABILITY') {
     throw new Error('Reward actions are only supported on liability accounts');
   }
-
-  return data as RewardAccountRow;
+  return account;
 }
 
 function requireRewardCurrency(account: RewardAccountRow): RewardCurrencyId {
-  const rewardCurrency = account.reward_currency;
-
-  if (!isRewardCurrencyId(rewardCurrency ?? '')) {
+  if (!isRewardCurrencyId(account.reward_currency ?? '')) {
     throw new Error('This account does not have a fixed reward currency');
   }
-
-  return rewardCurrency as RewardCurrencyId;
+  return account.reward_currency as RewardCurrencyId;
 }
 
 async function replaceRewardRulesForAccount(
-  supabase: SupabaseServerClient,
+  db: Queryable,
   userId: string,
   accountId: string,
   rules: RewardRule[],
 ): Promise<RewardRule[]> {
-  await requireRewardAccount(supabase, userId, accountId);
-
-  const { error } = await supabase
-    .from('accounts')
-    .update({ reward_rules: rules as unknown as Record<string, unknown>[] })
-    .eq('id', accountId)
-    .eq('user_id', userId);
-
-  if (error) {
-    throw new Error(error.message);
-  }
-
-  revalidateRewardPages(accountId);
+  await requireRewardAccount(db, userId, accountId);
+  await db.query('UPDATE accounts SET reward_rules = $1::jsonb WHERE id = $2 AND user_id = $3', [
+    JSON.stringify(rules),
+    accountId,
+    userId,
+  ]);
   return rules;
 }
 
-export async function getRewardRates(context: RequestSessionContext): Promise<RewardRateMap> {
-  const { data, error } = await context.supabase
-    .from('reward_rates')
-    .select('user_id, reward_currency, usd_per_10k_points, updated_at')
-    .eq('user_id', context.userId);
-
-  if (error) {
-    throw new Error(error.message);
-  }
-
-  return buildRewardRateMapStrict(data as RewardRateRow[]);
+export async function getRewardRates(): Promise<RewardRateMap> {
+  const { db, userId } = await getSessionContext();
+  const rateRows = await rows<RewardRateRow>(
+    db,
+    'SELECT user_id, reward_currency, usd_per_10k_points, updated_at FROM reward_rates WHERE user_id = $1',
+    [userId],
+  );
+  return buildRewardRateMapStrict(rateRows);
 }
 
 export async function updateRewardRate(
   input: z.infer<typeof UpdateRewardRateSchema>,
 ): Promise<{ rewardCurrency: RewardCurrencyId; usdPer10kPoints: number }> {
-  const { supabase, userId } = await getAuthenticatedContext();
+  const { db, userId } = await getSessionContext();
   const normalizedInput = UpdateRewardRateSchema.parse(input);
 
-  const { error } = await supabase.from('reward_rates').upsert(
-    {
-      user_id: userId,
-      reward_currency: normalizedInput.rewardCurrency,
-      usd_per_10k_points: normalizedInput.usdPer10kPoints,
-    },
-    { onConflict: 'user_id,reward_currency' },
+  await db.query(
+    `INSERT INTO reward_rates (user_id, reward_currency, usd_per_10k_points)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (user_id, reward_currency) DO UPDATE SET usd_per_10k_points = EXCLUDED.usd_per_10k_points`,
+    [userId, normalizedInput.rewardCurrency, normalizedInput.usdPer10kPoints],
   );
-
-  if (error) {
-    throw new Error(error.message);
-  }
-
-  revalidatePath('/accounts');
-  revalidatePath('/accounts/[id]', 'page');
 
   return normalizedInput;
 }
 
+/** Move points into or out of a liability account's reward balance directly (no cash leg). */
 export async function createRewardTransaction(
   input: z.infer<typeof RewardTransactionSchema>,
 ): Promise<{ transaction: Transaction }> {
-  const { supabase, userId } = await getAuthenticatedContext();
+  const { db, userId } = await getSessionContext();
   const normalizedInput = RewardTransactionSchema.parse(input);
-  const account = await requireRewardAccount(supabase, userId, normalizedInput.accountId);
-  const rewardCurrency = requireRewardCurrency(account);
-  const currentBalance = new Decimal(account.reward_balance ?? 0);
-  const amount = new Decimal(normalizedInput.amount);
 
-  if (normalizedInput.type === TransactionType.REWARD_REDEEM && currentBalance.lt(amount)) {
-    throw new Error('Insufficient reward balance');
-  }
+  return db.transaction(async (tx) => {
+    const account = await requireRewardAccount(tx, userId, normalizedInput.accountId);
+    const rewardCurrency = requireRewardCurrency(account);
+    const currentBalance = new Decimal(account.reward_balance);
+    const amount = new Decimal(normalizedInput.amount);
 
-  const nextRewardBalance =
-    normalizedInput.type === TransactionType.REWARD_TRANSFER_IN
-      ? currentBalance.plus(amount).toNumber()
-      : currentBalance.minus(amount).toNumber();
-  const normalizedMemo = normalizedInput.memo?.trim() ? normalizedInput.memo.trim() : null;
+    if (normalizedInput.type === TransactionType.REWARD_REDEEM && currentBalance.lt(amount)) {
+      throw new Error('Insufficient reward balance');
+    }
 
-  const { data: transactionRow, error: insertError } = await supabase
-    .from('transactions')
-    .insert({
-      user_id: userId,
-      type: normalizedInput.type,
-      amount: normalizedInput.amount,
-      currency: null,
-      reward_currency: rewardCurrency,
-      metadata: {},
-      reference_transaction_id: null,
-      from_account:
-        normalizedInput.type === TransactionType.REWARD_REDEEM
-          ? normalizedInput.accountId
-          : null,
-      to_account:
-        normalizedInput.type === TransactionType.REWARD_TRANSFER_IN
-          ? normalizedInput.accountId
-          : null,
-      category: null,
-      memo: normalizedMemo,
-      transaction_at: normalizedInput.date,
-    })
-    .select()
-    .single();
+    const nextRewardBalance =
+      normalizedInput.type === TransactionType.REWARD_TRANSFER_IN
+        ? currentBalance.plus(amount).toNumber()
+        : currentBalance.minus(amount).toNumber();
+    const normalizedMemo = normalizedInput.memo?.trim() ? normalizedInput.memo.trim() : null;
+    const isRedeem = normalizedInput.type === TransactionType.REWARD_REDEEM;
 
-  if (insertError) {
-    throw new Error(insertError.message);
-  }
+    const transaction = await one<Transaction>(
+      tx,
+      `INSERT INTO transactions
+         (user_id, type, amount, reward_currency, metadata, from_account, to_account, memo, transaction_date)
+       VALUES ($1, $2, $3, $4, '{}'::jsonb, $5, $6, $7, $8)
+       RETURNING *`,
+      [
+        userId,
+        normalizedInput.type,
+        normalizedInput.amount,
+        rewardCurrency,
+        isRedeem ? normalizedInput.accountId : null,
+        isRedeem ? null : normalizedInput.accountId,
+        normalizedMemo,
+        normalizedInput.date,
+      ],
+      'Failed to create reward transaction',
+    );
 
-  const { error: updateError } = await supabase
-    .from('accounts')
-    .update({ reward_balance: nextRewardBalance })
-    .eq('id', normalizedInput.accountId)
-    .eq('user_id', userId);
+    await tx.query('UPDATE accounts SET reward_balance = $1 WHERE id = $2 AND user_id = $3', [
+      nextRewardBalance,
+      normalizedInput.accountId,
+      userId,
+    ]);
 
-  if (updateError) {
-    throw new Error(updateError.message);
-  }
-
-  revalidateRewardPages(normalizedInput.accountId);
-
-  return { transaction: transactionRow as Transaction };
+    return { transaction };
+  });
 }
 
 export type UpdateRewardRuleInput = z.infer<typeof UpdateRewardRuleSchema>;
 
+/** Upsert one category's multiplier rule by category name (case-sensitive match). */
 export async function updateRewardRule(input: UpdateRewardRuleInput): Promise<RewardRule> {
-  const { supabase, userId } = await getAuthenticatedContext();
+  const { db, userId } = await getSessionContext();
   const normalizedInput = UpdateRewardRuleSchema.parse(input);
-  const account = await requireRewardAccount(supabase, userId, normalizedInput.accountId);
-  const rules = (account.reward_rules ?? []) as RewardRule[];
 
-  const newRule: RewardRule = {
-    category: normalizedInput.category,
-    multiplier: normalizedInput.multiplier,
-    rule_source: 'manual',
-    cap_amount:
-      normalizedInput.cap_amount == null
-        ? undefined
-        : normalizeMoneyAmount(normalizedInput.cap_amount),
-    cap_period: normalizedInput.cap_period,
-    fallback_rate: normalizedInput.fallback_rate,
-  };
+  return db.transaction(async (tx) => {
+    const account = await requireRewardAccount(tx, userId, normalizedInput.accountId);
+    const rules = account.reward_rules ?? [];
 
-  const existingRuleIdx = rules.findIndex((rule) => rule.category === normalizedInput.category);
-  const updatedRules =
-    existingRuleIdx >= 0
-      ? rules.map((rule, index) => (index === existingRuleIdx ? newRule : rule))
-      : [...rules, newRule];
+    const newRule: RewardRule = {
+      category: normalizedInput.category,
+      multiplier: normalizedInput.multiplier,
+      rule_source: 'manual',
+      cap_amount:
+        normalizedInput.cap_amount == null ? undefined : normalizeMoneyAmount(normalizedInput.cap_amount),
+      cap_period: normalizedInput.cap_period,
+      fallback_rate: normalizedInput.fallback_rate,
+    };
 
-  const { error } = await supabase
-    .from('accounts')
-    .update({ reward_rules: updatedRules as unknown as Record<string, unknown>[] })
-    .eq('id', normalizedInput.accountId)
-    .eq('user_id', userId);
+    const existingRuleIdx = rules.findIndex((rule) => rule.category === normalizedInput.category);
+    const updatedRules =
+      existingRuleIdx >= 0
+        ? rules.map((rule, index) => (index === existingRuleIdx ? newRule : rule))
+        : [...rules, newRule];
 
-  if (error) {
-    throw new Error(error.message);
-  }
+    await tx.query('UPDATE accounts SET reward_rules = $1::jsonb WHERE id = $2 AND user_id = $3', [
+      JSON.stringify(updatedRules),
+      normalizedInput.accountId,
+      userId,
+    ]);
 
-  revalidateRewardPages(normalizedInput.accountId);
-  return newRule;
+    return newRule;
+  });
 }
 
 export async function importRewardRules(
   input: z.infer<typeof ReplaceRewardRulesSchema>,
 ): Promise<RewardRuleSet> {
-  const { supabase, userId } = await getAuthenticatedContext();
+  const { db, userId } = await getSessionContext();
   const parsed = ReplaceRewardRulesSchema.parse(input);
   const ruleSet = normalizeRewardRuleSet(parseRewardRuleSet(parsed.ruleSet), 'imported');
-
-  await replaceRewardRulesForAccount(supabase, userId, parsed.accountId, ruleSet.rules);
-
+  await replaceRewardRulesForAccount(db, userId, parsed.accountId, ruleSet.rules);
   return ruleSet;
 }
 
 export async function applyCloudRewardRules(
   input: z.infer<typeof ApplyCloudRewardRulesSchema>,
 ): Promise<RewardRuleSet> {
-  const { supabase, userId } = await getAuthenticatedContext();
+  const { db, userId } = await getSessionContext();
   const parsed = ApplyCloudRewardRulesSchema.parse(input);
   const ruleSet = getCloudRewardRuleSet(parsed.ruleSetId);
-
   if (!ruleSet) {
     throw new Error('Cloud reward rule set not found');
   }
-
-  await replaceRewardRulesForAccount(supabase, userId, parsed.accountId, ruleSet.rules);
-
+  await replaceRewardRulesForAccount(db, userId, parsed.accountId, ruleSet.rules);
   return ruleSet;
 }

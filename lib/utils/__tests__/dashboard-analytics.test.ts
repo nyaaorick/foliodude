@@ -29,7 +29,7 @@ function makeAccount(overrides: Partial<Account>): Account {
     shares: 0,
     cost_basis: 0,
     last_price: null,
-    last_price_at: null,
+    last_price_date: null,
     reward_rules: [],
     spend_stats: {},
     auto_pay_config: null,

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useNavigate } from 'react-router-dom';
 import { Plus } from 'lucide-react';
 import { createAssetBalanceAdjustment } from '@/lib/actions/createAssetBalanceAdjustment';
 import { Button } from '@/components/ui/button';
@@ -26,7 +26,7 @@ export function AdjustAssetBalanceDialog({
   accountId,
   accountCurrency,
 }: AdjustAssetBalanceDialogProps) {
-  const router = useRouter();
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -85,7 +85,7 @@ export function AdjustAssetBalanceDialog({
               });
 
               setOpen(false);
-              router.refresh();
+              navigate(0);
             } catch (error) {
               setError(error instanceof Error ? error.message : 'Failed to adjust balance');
             } finally {

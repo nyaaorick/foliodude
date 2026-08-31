@@ -1,7 +1,6 @@
-'use server';
-
-import { createClient } from '@/lib/supabase/server';
-import type { RequestSessionContext } from '@/lib/supabase/server';
+import { getSessionContext } from '@/lib/db/session';
+import { getApiKey } from '@/lib/db/settings';
+import { rows } from '@/lib/db/sql';
 import { AccountType, type Account } from '@/lib/types/accounts';
 import type { DashboardAnalytics } from '@/lib/types/dashboard';
 import type { RewardRateMap } from '@/lib/types/rewards';
@@ -17,191 +16,119 @@ import {
 } from '@/lib/utils/financial-analytics';
 import { fetchUsdExchangeRates } from '@/lib/utils/fx-rates';
 
-type ActionResult<T> =
-  | { success: true; data: T }
-  | { success: false; error: string };
-type DashboardInputsResult =
-  | { accounts: Account[]; rewardRates: RewardRateMap }
-  | { error: string };
+type ActionResult<T> = { success: true; data: T } | { success: false; error: string };
+
 const HIDDEN_MARKER = '[HIDDEN]';
 
-function toSnapshotDate(date = new Date()) {
-  return date.toISOString().slice(0, 10);
-}
-
-async function loadAccountsAndRewardRates(
-  supabase: Awaited<ReturnType<typeof createClient>>,
-  userId: string,
-): Promise<DashboardInputsResult> {
-  const [{ data: accountsData, error: accountsError }, { data: rewardRatesData, error: ratesError }] =
-    await Promise.all([
-      supabase.from('accounts').select('*').eq('user_id', userId),
-      supabase
-        .from('reward_rates')
-        .select('user_id, reward_currency, usd_per_10k_points, updated_at')
-        .eq('user_id', userId),
-    ]);
-
-  if (accountsError) {
-    return { error: accountsError.message };
-  }
-
-  if (ratesError) {
-    return { error: ratesError.message };
-  }
-
-  return {
-    accounts: ((accountsData ?? []) as AccountRow[]).map(mapAccountRowToAccount),
-    rewardRates: buildRewardRateMap(rewardRatesData as RewardRateRow[] | null),
-  };
-}
-
 async function ensureTodaySnapshot(
-  supabase: Awaited<ReturnType<typeof createClient>>,
+  db: Awaited<ReturnType<typeof getSessionContext>>['db'],
   userId: string,
   accounts: Account[],
   rewardRates: RewardRateMap,
-) {
-  const snapshotDate = toSnapshotDate();
-
-  const { data: existingSnapshot, error: existingError } = await supabase
-    .from('net_worth_snapshots')
-    .select('id')
-    .eq('user_id', userId)
-    .eq('snapshot_date', snapshotDate)
-    .maybeSingle();
-
-  if (existingError) {
-    return { success: false as const, error: existingError.message };
-  }
-
-  if (existingSnapshot) {
-    return { success: true as const };
-  }
+  apiKey: string | null,
+): Promise<void> {
+  const existing = await db.query('SELECT 1 FROM net_worth_snapshots WHERE user_id = $1 AND snapshot_date = CURRENT_DATE', [userId]);
+  if (existing.rows.length > 0) return;
 
   const accountCurrencies = accounts
-    .filter(
-      (account) =>
-        account.type === AccountType.ASSET || account.type === AccountType.LIABILITY,
-    )
-    .map((account) => account.currency);
-  const fxRates = await fetchUsdExchangeRates(accountCurrencies);
+    .filter((a) => a.type === AccountType.ASSET || a.type === AccountType.LIABILITY)
+    .map((a) => a.currency);
+  const fxRates = await fetchUsdExchangeRates(accountCurrencies, apiKey);
   const snapshot = buildDashboardBreakdown(accounts, rewardRates, fxRates);
 
-  const { error: insertError } = await supabase.from('net_worth_snapshots').insert({
-    user_id: userId,
-    snapshot_date: snapshotDate,
-    snapshot_at: new Date().toISOString(),
-    net_worth_usd: snapshot.netWorthUsd,
-    assets_usd: snapshot.assetsUsd,
-    liabilities_usd: snapshot.liabilitiesUsd,
-    breakdown: snapshot.breakdown,
-    valuation_inputs: snapshot.valuationInputs,
-  });
-
-  if (insertError) {
-    return { success: false as const, error: insertError.message };
-  }
-
-  return { success: true as const };
+  await db.query(
+    `INSERT INTO net_worth_snapshots
+       (user_id, snapshot_date, net_worth_usd, assets_usd, liabilities_usd, breakdown, valuation_inputs)
+     VALUES ($1, CURRENT_DATE, $2, $3, $4, $5::jsonb, $6::jsonb)`,
+    [
+      userId,
+      snapshot.netWorthUsd,
+      snapshot.assetsUsd,
+      snapshot.liabilitiesUsd,
+      JSON.stringify(snapshot.breakdown),
+      JSON.stringify(snapshot.valuationInputs),
+    ],
+  );
 }
 
-export async function getDashboardAnalytics(
-  context: RequestSessionContext,
-): Promise<ActionResult<DashboardAnalytics>> {
-  const supabase = context.supabase;
-  const userId = context.userId;
+export async function getDashboardAnalytics(): Promise<ActionResult<DashboardAnalytics>> {
+  try {
+    const { db, userId } = await getSessionContext();
 
-  const inputsResult = await loadAccountsAndRewardRates(supabase, userId);
-  if ('error' in inputsResult) {
-    return { success: false, error: inputsResult.error };
-  }
+    const [accountRows, rewardRateRows] = await Promise.all([
+      rows<AccountRow>(db, 'SELECT * FROM accounts WHERE user_id = $1', [userId]),
+      rows<RewardRateRow>(
+        db,
+        'SELECT user_id, reward_currency, usd_per_10k_points, updated_at FROM reward_rates WHERE user_id = $1',
+        [userId],
+      ),
+    ]);
+    const accounts = accountRows.map(mapAccountRowToAccount);
+    const rewardRates = buildRewardRateMap(rewardRateRows);
+    const apiKey = await getApiKey(db, userId, 'exchangerate');
 
-  const { accounts, rewardRates } = inputsResult;
+    await ensureTodaySnapshot(db, userId, accounts, rewardRates, apiKey);
 
-  const snapshotResult = await ensureTodaySnapshot(
-    supabase,
-    userId,
-    accounts,
-    rewardRates,
-  );
-  if (!snapshotResult.success) {
-    return { success: false, error: snapshotResult.error };
-  }
+    const [expenseRows, snapshotRows] = await Promise.all([
+      rows<ExpenseRow>(
+        db,
+        `SELECT amount, currency, category, transaction_date FROM transactions
+          WHERE user_id = $1 AND type = 'EXPENSE'
+            AND (memo IS NULL OR memo NOT ILIKE '%' || $2 || '%')
+          ORDER BY transaction_date ASC, seq ASC`,
+        [userId, HIDDEN_MARKER],
+      ),
+      rows<{ snapshot_date: string; net_worth_usd: number }>(
+        db,
+        'SELECT snapshot_date, net_worth_usd FROM net_worth_snapshots WHERE user_id = $1 ORDER BY snapshot_date ASC',
+        [userId],
+      ),
+    ]);
 
-  const expenseRowsPromise = supabase
-    .from('transactions')
-    .select('amount, currency, category, transaction_at')
-    .eq('user_id', userId)
-    .eq('type', 'EXPENSE')
-    .or(`memo.is.null,memo.not.ilike.*${HIDDEN_MARKER}*`)
-    .order('transaction_at', { ascending: true });
+    const allCurrencies = [
+      ...accounts
+        .filter((a) => a.type === AccountType.ASSET || a.type === AccountType.LIABILITY)
+        .map((a) => a.currency),
+      ...expenseRows.map((expense) => expense.currency ?? 'USD'),
+    ];
+    const fxRates = await fetchUsdExchangeRates(allCurrencies, apiKey);
+    const currentBreakdown = buildDashboardBreakdown(accounts, rewardRates, fxRates);
+    const expenseSeries = buildMonthlyExpenseSeries(expenseRows, fxRates);
 
-  const snapshotRowsPromise = supabase
-    .from('net_worth_snapshots')
-    .select('snapshot_date, net_worth_usd')
-    .eq('user_id', userId)
-    .order('snapshot_date', { ascending: true });
-
-  const [{ data: expenseRows, error: expensesError }, { data: snapshotRows, error: historyError }] =
-    await Promise.all([expenseRowsPromise, snapshotRowsPromise]);
-
-  if (expensesError) {
-    return { success: false, error: expensesError.message };
-  }
-
-  if (historyError) {
-    return { success: false, error: historyError.message };
-  }
-
-  const allCurrencies = [
-    ...accounts
-      .filter(
-        (account) =>
-          account.type === AccountType.ASSET || account.type === AccountType.LIABILITY,
-      )
-      .map((account) => account.currency),
-    ...(expenseRows ?? []).map((expense) => expense.currency ?? 'USD'),
-  ];
-  const fxRates = await fetchUsdExchangeRates(allCurrencies);
-  const currentBreakdown = buildDashboardBreakdown(accounts, rewardRates, fxRates);
-  const expenseSeries = buildMonthlyExpenseSeries(
-    (expenseRows ?? []) as ExpenseRow[],
-    fxRates,
-  );
-
-  return {
-    success: true,
-    data: {
-      allocation: buildAllocationSlices(currentBreakdown.breakdown),
-      debtSummary:
-        accounts.some((account) => account.type === AccountType.LIABILITY)
+    return {
+      success: true,
+      data: {
+        allocation: buildAllocationSlices(currentBreakdown.breakdown),
+        debtSummary: accounts.some((a) => a.type === AccountType.LIABILITY)
           ? {
               label: 'Credit Card Debt',
               usd: currentBreakdown.liabilitiesUsd,
               grossDebtUsd: currentBreakdown.breakdown.credit_card_debt,
               overpaymentUsd: currentBreakdown.breakdown.credit_card_overpayment,
               accounts: accounts
-                .filter((account) => account.type === AccountType.LIABILITY)
-                .map((account) => ({
-                  account_id: account.id,
-                  name: account.name,
-                  usd: getAccountUsdValue(account, rewardRates, fxRates),
+                .filter((a) => a.type === AccountType.LIABILITY)
+                .map((a) => ({
+                  account_id: a.id,
+                  name: a.name,
+                  usd: getAccountUsdValue(a, rewardRates, fxRates),
                 })),
             }
           : null,
-      totals: {
-        assetsUsd: currentBreakdown.assetsUsd,
-        liabilitiesUsd: currentBreakdown.liabilitiesUsd,
-        netWorthUsd: currentBreakdown.netWorthUsd,
+        totals: {
+          assetsUsd: currentBreakdown.assetsUsd,
+          liabilitiesUsd: currentBreakdown.liabilitiesUsd,
+          netWorthUsd: currentBreakdown.netWorthUsd,
+        },
+        netWorthHistory: snapshotRows.map((row) => ({
+          date: row.snapshot_date,
+          netWorthUsd: row.net_worth_usd,
+        })),
+        monthlyExpenses: expenseSeries.monthlyExpenses,
+        expenseCategories: expenseSeries.expenseCategories,
+        asOf: new Date().toISOString(),
       },
-      netWorthHistory: (snapshotRows ?? []).map((row) => ({
-        date: row.snapshot_date,
-        netWorthUsd: row.net_worth_usd,
-      })),
-      monthlyExpenses: expenseSeries.monthlyExpenses,
-      expenseCategories: expenseSeries.expenseCategories,
-      asOf: new Date().toISOString(),
-    },
-  };
+    };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Failed to load dashboard analytics' };
+  }
 }

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- viewport-fit=cover is what makes env(safe-area-inset-*) resolve to real
+         values on notched iPhones; maximum-scale pins out iOS pinch-zoom. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+
+    <title>FolioDude</title>
+    <meta name="description" content="Local-first personal finance tracker. Your data never leaves your device." />
+
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <meta name="theme-color" content="#FAF5ED" />
+    <meta name="color-scheme" content="light" />
+
+    <!-- iOS standalone ("Add to Home Screen") -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="FolioDude" />
+    <link rel="apple-touch-icon" href="./icon/apple-touch-icon.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="./icon/icon-192.png" />
+
+    <!-- iOS Safari fires no scroll-restore on standalone launch; block the
+         rubber-band bounce so the fixed chrome in AppShell stays put. -->
+    <style>
+      html,
+      body {
+        overscroll-behavior-y: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./main.tsx"></script>
+  </body>
+</html>

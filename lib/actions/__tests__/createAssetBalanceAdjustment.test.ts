@@ -1,179 +1,65 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { AccountType } from '@/lib/types/accounts';
 
-const { mockCreateClient, mockRevalidatePath } = vi.hoisted(() => ({
-  mockCreateClient: vi.fn(),
-  mockRevalidatePath: vi.fn(),
-}));
-
-vi.mock('@/lib/supabase/server', () => ({
-  createClient: mockCreateClient,
-}));
-
-vi.mock('next/cache', () => ({
-  revalidatePath: mockRevalidatePath,
-}));
+const { mockGetSessionContext } = vi.hoisted(() => ({ mockGetSessionContext: vi.fn() }));
+vi.mock('@/lib/db/session', () => ({ getSessionContext: mockGetSessionContext }));
 
 import { createAssetBalanceAdjustment } from '@/lib/actions/createAssetBalanceAdjustment';
+import { allTransactions, createTestContext, getAccount, seedAccount } from '@/lib/db/testing';
+import type { SessionContext } from '@/lib/db/session';
 
-const USER_ID = 'user-1';
-const ACCOUNT_ID = '11111111-1111-4111-8111-111111111111';
-
-function createSupabaseMock(options?: {
-  accountType?: AccountType;
-  balance?: number;
-  currency?: string;
-}) {
-  const insertedTransactions: Array<Record<string, unknown>> = [];
-  const accountUpdates: Array<Record<string, unknown>> = [];
-  const accountRow = {
-    balance: options?.balance ?? 100,
-    currency: options?.currency ?? 'USD',
-    type: options?.accountType ?? AccountType.ASSET,
-  };
-
-  const accountsTable = {
-    select: vi.fn(() => ({
-      eq() {
-        return this;
-      },
-      single: vi.fn().mockResolvedValue({ data: accountRow, error: null }),
-    })),
-    update: vi.fn((payload: Record<string, unknown>) => {
-      accountUpdates.push(payload);
-      return {
-        eq() {
-          return this;
-        },
-        then(resolve: (value: { error: null }) => unknown) {
-          return Promise.resolve(resolve({ error: null }));
-        },
-      };
-    }),
-  };
-
-  const transactionsTable = {
-    insert: vi.fn((payload: Record<string, unknown>) => {
-      insertedTransactions.push(payload);
-      return {
-        select() {
-          return this;
-        },
-        single() {
-          return Promise.resolve({
-            data: { id: 'adjustment-1' },
-            error: null,
-          });
-        },
-      };
-    }),
-  };
-
-  return {
-    insertedTransactions,
-    accountUpdates,
-    supabase: {
-      auth: {
-        getUser: vi.fn().mockResolvedValue({
-          data: { user: { id: USER_ID } },
-        }),
-      },
-      from: vi.fn((table: string) => {
-        if (table === 'accounts') return accountsTable;
-        if (table === 'transactions') return transactionsTable;
-        throw new Error(`Unexpected table: ${table}`);
-      }),
-    },
-  };
-}
+const DATE = '2026-03-16';
 
 describe('createAssetBalanceAdjustment', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+  let ctx: SessionContext;
+
+  beforeEach(async () => {
+    ctx = await createTestContext();
+    mockGetSessionContext.mockResolvedValue(ctx);
   });
 
   it('creates positive adjustments as income and increases balance', async () => {
-    const { insertedTransactions, accountUpdates, supabase } = createSupabaseMock({
-      balance: 100,
-    });
-    mockCreateClient.mockResolvedValue(supabase);
+    const accountId = await seedAccount(ctx, { type: 'ASSET', currency: 'USD', balance: 100 });
 
-    const result = await createAssetBalanceAdjustment({
-      accountId: ACCOUNT_ID,
-      amount: 25,
-      memo: 'Top up',
-      date: '2026-03-16T00:00:00.000Z',
-    });
+    const result = await createAssetBalanceAdjustment({ accountId, amount: 25, date: DATE });
+    expect(result).toEqual({ transaction_id: expect.any(String) });
 
-    expect(result).toEqual({ transaction_id: 'adjustment-1' });
-    expect(insertedTransactions[0]).toMatchObject({
-      user_id: USER_ID,
+    expect((await allTransactions(ctx.db))[0]).toMatchObject({
       type: 'INCOME',
       amount: 25,
-      currency: 'USD',
-      reward_currency: null,
-      metadata: { kind: 'asset_balance_adjustment' },
-      reference_transaction_id: null,
-      from_account: null,
-      to_account: ACCOUNT_ID,
       category: 'Balance Adjustment',
-      memo: 'Top up',
-      transaction_at: '2026-03-16T00:00:00.000Z',
+      metadata: { kind: 'asset_balance_adjustment' },
+      from_account: null,
+      to_account: accountId,
     });
-    expect(accountUpdates).toEqual([{ balance: 125 }]);
-    expect(mockRevalidatePath).toHaveBeenCalledWith('/accounts');
-    expect(mockRevalidatePath).toHaveBeenCalledWith(`/accounts/${ACCOUNT_ID}`);
+    expect(Number((await getAccount(ctx.db, accountId)).balance)).toBe(125);
   });
 
   it('creates negative adjustments as expense and decreases balance', async () => {
-    const { insertedTransactions, accountUpdates, supabase } = createSupabaseMock({
-      balance: 100,
-    });
-    mockCreateClient.mockResolvedValue(supabase);
+    const accountId = await seedAccount(ctx, { type: 'ASSET', currency: 'USD', balance: 100 });
 
-    await createAssetBalanceAdjustment({
-      accountId: ACCOUNT_ID,
-      amount: -7.25,
-      memo: 'Correction',
-      date: '2026-03-16T00:00:00.000Z',
-    });
+    await createAssetBalanceAdjustment({ accountId, amount: -7.25, date: DATE });
 
-    expect(insertedTransactions[0]).toMatchObject({
+    // Direction lives in the type and from/to; the stored amount stays positive.
+    expect((await allTransactions(ctx.db))[0]).toMatchObject({
       type: 'EXPENSE',
       amount: 7.25,
-      from_account: ACCOUNT_ID,
+      from_account: accountId,
       to_account: null,
-      category: 'Balance Adjustment',
-      metadata: { kind: 'asset_balance_adjustment' },
     });
-    expect(accountUpdates).toEqual([{ balance: 92.75 }]);
+    expect(Number((await getAccount(ctx.db, accountId)).balance)).toBe(92.75);
   });
 
   it('rejects zero amount', async () => {
-    const { supabase } = createSupabaseMock();
-    mockCreateClient.mockResolvedValue(supabase);
-
+    const accountId = await seedAccount(ctx, { type: 'ASSET' });
     await expect(
-      createAssetBalanceAdjustment({
-        accountId: ACCOUNT_ID,
-        amount: 0,
-        date: '2026-03-16T00:00:00.000Z',
-      }),
+      createAssetBalanceAdjustment({ accountId, amount: 0, date: DATE }),
     ).rejects.toThrow('Amount must not be 0');
   });
 
   it('rejects non-asset accounts', async () => {
-    const { supabase } = createSupabaseMock({
-      accountType: AccountType.LIABILITY,
-    });
-    mockCreateClient.mockResolvedValue(supabase);
-
+    const accountId = await seedAccount(ctx, { type: 'LIABILITY' });
     await expect(
-      createAssetBalanceAdjustment({
-        accountId: ACCOUNT_ID,
-        amount: 10,
-        date: '2026-03-16T00:00:00.000Z',
-      }),
+      createAssetBalanceAdjustment({ accountId, amount: 10, date: DATE }),
     ).rejects.toThrow('Account must be an asset account');
   });
 });

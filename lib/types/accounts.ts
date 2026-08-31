@@ -39,7 +39,7 @@ export interface Account {
   shares: number;
   cost_basis: number;
   last_price: number | null;
-  last_price_at: string | null;
+  last_price_date: string | null;
   reward_rules: RewardRule[];
   spend_stats: Record<string, number>;
   auto_pay_config: unknown;

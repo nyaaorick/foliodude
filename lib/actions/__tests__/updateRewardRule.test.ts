@@ -1,98 +1,27 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockCreateClient, mockRevalidatePath } = vi.hoisted(() => ({
-  mockCreateClient: vi.fn(),
-  mockRevalidatePath: vi.fn(),
-}));
-
-vi.mock('@/lib/supabase/server', () => ({
-  createClient: mockCreateClient,
-}));
-
-vi.mock('next/cache', () => ({
-  revalidatePath: mockRevalidatePath,
-}));
+const { mockGetSessionContext } = vi.hoisted(() => ({ mockGetSessionContext: vi.fn() }));
+vi.mock('@/lib/db/session', () => ({ getSessionContext: mockGetSessionContext }));
 
 import { updateRewardRule } from '@/lib/actions/reward-actions';
-
-const USER_ID = 'user-1';
-const ACCOUNT_ID = '11111111-1111-4111-8111-111111111111';
-
-function createSupabaseMock(
-  rewardRules: Array<Record<string, unknown>> = [
-    {
-      category: 'Dining',
-      multiplier: 4,
-      rule_source: 'imported',
-    },
-  ],
-) {
-  const accountUpdates: Array<Record<string, unknown>> = [];
-
-  const accountsTable = {
-    select: vi.fn(() => ({
-      eq() {
-        return this;
-      },
-      single: vi.fn().mockResolvedValue({
-        data: {
-          type: 'LIABILITY',
-          reward_rules: rewardRules,
-        },
-        error: null,
-      }),
-    })),
-    update: vi.fn((payload: Record<string, unknown>) => {
-      accountUpdates.push(payload);
-      return {
-        eq() {
-          return this;
-        },
-        then(resolve: (value: { error: null }) => unknown) {
-          return Promise.resolve(resolve({ error: null }));
-        },
-      };
-    }),
-  };
-
-  return {
-    accountUpdates,
-    supabase: {
-      auth: {
-        getUser: vi.fn().mockResolvedValue({
-          data: { user: { id: USER_ID } },
-        }),
-      },
-      from: vi.fn((table: string) => {
-        if (table === 'accounts') return accountsTable;
-        throw new Error(`Unexpected table: ${table}`);
-      }),
-    },
-  };
-}
+import { createTestContext, getAccount, seedAccount } from '@/lib/db/testing';
+import type { SessionContext } from '@/lib/db/session';
 
 describe('updateRewardRule', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+  let ctx: SessionContext;
+
+  beforeEach(async () => {
+    ctx = await createTestContext();
+    mockGetSessionContext.mockResolvedValue(ctx);
   });
 
-  it('marks edited imported rules as manual and preserves cap and basic reward rate', async () => {
-    const { accountUpdates, supabase } = createSupabaseMock([
-      {
-        category: 'Dining',
-        multiplier: 4,
-        rule_source: 'imported',
-        cap_amount: 2500,
-        cap_period: 'annual',
-        fallback_rate: 1,
-      },
-    ]);
-    mockCreateClient.mockResolvedValue(supabase);
+  it('appends a new category rule and marks it manual', async () => {
+    const accountId = await seedAccount(ctx, { type: 'LIABILITY', reward_rules: [] });
 
     const result = await updateRewardRule({
-      accountId: ACCOUNT_ID,
+      accountId,
       category: 'Dining',
-      multiplier: 5,
+      multiplier: 4,
       cap_amount: 2500,
       cap_period: 'annual',
       fallback_rate: 1,
@@ -100,150 +29,47 @@ describe('updateRewardRule', () => {
 
     expect(result).toMatchObject({
       category: 'Dining',
+      multiplier: 4,
       rule_source: 'manual',
       cap_amount: 2500,
       cap_period: 'annual',
       fallback_rate: 1,
     });
-    expect(accountUpdates[0]).toMatchObject({
-      reward_rules: [
-        {
-          category: 'Dining',
-          multiplier: 5,
-          rule_source: 'manual',
-          cap_amount: 2500,
-          cap_period: 'annual',
-          fallback_rate: 1,
-        },
-      ],
-    });
+    expect((await getAccount(ctx.db, accountId)).reward_rules).toEqual([result]);
   });
 
-  it('preserves multiplier and basic reward rate when editing cap', async () => {
-    const { accountUpdates, supabase } = createSupabaseMock([
-      {
-        category: 'Travel',
-        multiplier: 3,
-        rule_source: 'manual',
-        cap_amount: 2000,
-        cap_period: 'annual',
-        fallback_rate: 1.5,
-      },
-    ]);
-    mockCreateClient.mockResolvedValue(supabase);
-
-    const result = await updateRewardRule({
-      accountId: ACCOUNT_ID,
-      category: 'Travel',
-      multiplier: 3,
-      cap_amount: 3000,
-      cap_period: 'monthly',
-      fallback_rate: 1.5,
-    });
-
-    expect(result).toMatchObject({
-      category: 'Travel',
-      multiplier: 3,
-      cap_amount: 3000,
-      cap_period: 'monthly',
-      fallback_rate: 1.5,
-      rule_source: 'manual',
-    });
-    expect(accountUpdates[0]).toMatchObject({
+  it('replaces the existing rule for the same category rather than appending a duplicate', async () => {
+    const accountId = await seedAccount(ctx, {
+      type: 'LIABILITY',
       reward_rules: [
-        {
-          category: 'Travel',
-          multiplier: 3,
-          cap_amount: 3000,
-          cap_period: 'monthly',
-          fallback_rate: 1.5,
-          rule_source: 'manual',
-        },
+        { category: 'Dining', multiplier: 4, rule_source: 'imported', cap_amount: 2500, cap_period: 'annual', fallback_rate: 1 },
+        { category: 'Travel', multiplier: 3, rule_source: 'cloud' },
       ],
     });
+
+    await updateRewardRule({ accountId, category: 'Dining', multiplier: 5, cap_amount: 2500, cap_period: 'annual', fallback_rate: 1 });
+
+    const rules = (await getAccount(ctx.db, accountId)).reward_rules as Array<{ category: string; multiplier: number; rule_source: string }>;
+    expect(rules).toHaveLength(2);
+    expect(rules.find((r) => r.category === 'Dining')).toMatchObject({ multiplier: 5, rule_source: 'manual' });
+    // Sibling category untouched.
+    expect(rules.find((r) => r.category === 'Travel')).toMatchObject({ multiplier: 3, rule_source: 'cloud' });
   });
 
-  it('preserves multiplier and cap when editing basic reward rate', async () => {
-    const { accountUpdates, supabase } = createSupabaseMock([
-      {
-        category: 'Grocery',
-        multiplier: 2,
-        rule_source: 'manual',
-        cap_amount: 1200,
-        cap_period: 'annual',
-        fallback_rate: 1,
-      },
-    ]);
-    mockCreateClient.mockResolvedValue(supabase);
-
-    const result = await updateRewardRule({
-      accountId: ACCOUNT_ID,
-      category: 'Grocery',
-      multiplier: 2,
-      cap_amount: 1200,
-      cap_period: 'annual',
-      fallback_rate: 0.5,
+  it('marks a rule edited from a cloud preset as manual', async () => {
+    const accountId = await seedAccount(ctx, {
+      type: 'LIABILITY',
+      reward_rules: [{ category: 'Travel', multiplier: 3, rule_source: 'cloud' }],
     });
 
-    expect(result).toMatchObject({
-      category: 'Grocery',
-      multiplier: 2,
-      cap_amount: 1200,
-      cap_period: 'annual',
-      fallback_rate: 0.5,
-      rule_source: 'manual',
-    });
-    expect(accountUpdates[0]).toMatchObject({
-      reward_rules: [
-        {
-          category: 'Grocery',
-          multiplier: 2,
-          cap_amount: 1200,
-          cap_period: 'annual',
-          fallback_rate: 0.5,
-          rule_source: 'manual',
-        },
-      ],
-    });
+    const result = await updateRewardRule({ accountId, category: 'Travel', multiplier: 6 });
+    expect(result.rule_source).toBe('manual');
   });
 
-  it('marks edited cloud rules as manual', async () => {
-    const { accountUpdates, supabase } = createSupabaseMock([
-      {
-        category: 'Travel',
-        multiplier: 3,
-        rule_source: 'cloud',
-        cap_amount: 1800,
-        cap_period: 'annual',
-        fallback_rate: 1,
-      },
-    ]);
-    mockCreateClient.mockResolvedValue(supabase);
-
-    const result = await updateRewardRule({
-      accountId: ACCOUNT_ID,
-      category: 'Travel',
-      multiplier: 6,
-      cap_amount: 1800,
-      cap_period: 'annual',
-      fallback_rate: 1,
-    });
-
-    expect(result).toMatchObject({
-      category: 'Travel',
-      rule_source: 'manual',
-    });
-    expect(accountUpdates[0]).toMatchObject({
-      reward_rules: [
-        {
-          category: 'Travel',
-          multiplier: 6,
-          cap_amount: 1800,
-          cap_period: 'annual',
-          fallback_rate: 1,
-          rule_source: 'manual',
-        },
-      ],
-    });
+  it('rejects a non-liability account', async () => {
+    const accountId = await seedAccount(ctx, { type: 'ASSET' });
+    await expect(
+      updateRewardRule({ accountId, category: 'Dining', multiplier: 4 }),
+    ).rejects.toThrow('Reward actions are only supported on liability accounts');
   });
 });

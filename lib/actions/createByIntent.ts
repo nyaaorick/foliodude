@@ -6,7 +6,8 @@ import { createAssetsExpense } from '@/lib/actions/createAssetsExpense';
 import { getAccounts } from '@/lib/actions/account-read-actions';
 import { createTransaction } from '@/lib/actions/createTransaction';
 import { createTransfer } from '@/lib/actions/createTransfer';
-import { requireSessionContext } from '@/lib/supabase/server';
+import { getSessionContext } from '@/lib/db/session';
+import { getApiKey } from '@/lib/db/settings';
 import { EXPENSE_CATEGORIES } from '@/lib/data/expense-categories';
 import {
   AccountType,
@@ -16,7 +17,8 @@ import {
 import { AIRLINE_PROGRAM_IDS } from '@/lib/types/mileage';
 import { REWARD_CURRENCY_IDS } from '@/lib/types/rewards';
 
-const GEMINI_API_KEY = 'ROTATED-REDACTED-DO-NOT-USE';
+// No shipped credential (PLAN.md §1 / §7): the caller supplies a key from
+// Settings, sourced via lib/db/settings.ts's `apikey:gemini` row.
 const GEMINI_TEXT_MODEL = 'gemini-2.5-flash';
 const GEMINI_IMAGE_MODEL = 'gemini-2.5-flash';
 const GEMINI_TEXT_URL =
@@ -43,7 +45,6 @@ const AI_ACCOUNT_TYPES = [
   AccountType.LIABILITY,
 ] as const;
 const SHANGHAI_TIME_ZONE = 'Asia/Shanghai';
-const SHANGHAI_UTC_OFFSET_MS = 8 * 60 * 60 * 1000;
 const DATE_ONLY_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
 const currencyIds = Object.keys(SUPPORTED_CURRENCIES) as [
@@ -84,14 +85,14 @@ const CreateExpensePayloadSchema = z.object({
   category: z.enum(EXPENSE_CATEGORIES),
   amount: z.number().finite().gt(0),
   memo: z.string().optional(),
-  date: z.string().datetime(),
+  date: z.string().date(),
 });
 
 const CreateAssetsExpensePayloadSchema = z.object({
   accountId: z.string().uuid(),
   amount: z.number().finite().gt(0),
   memo: z.string().optional(),
-  date: z.string().datetime(),
+  date: z.string().date(),
 });
 
 const CreateTransferPayloadSchema = z
@@ -300,16 +301,6 @@ function getDateInTimeZone(date: Date, timeZone: string) {
 
 function getShanghaiTodayDate() {
   return getDateInTimeZone(new Date(), SHANGHAI_TIME_ZONE);
-}
-
-function dateOnlyToShanghaiMidnightUtcIso(dateOnly: string) {
-  const [year, month, day] = DateOnlySchema.parse(dateOnly)
-    .split('-')
-    .map(Number);
-
-  return new Date(
-    Date.UTC(year, month - 1, day, 0, 0, 0, 0) - SHANGHAI_UTC_OFFSET_MS,
-  ).toISOString();
 }
 
 function normalizeImageOcrResult(input: {
@@ -810,6 +801,7 @@ function buildImagePlannerPrompt(input: {
 
 async function generateGeminiJsonText(input: {
   url: string;
+  apiKey: string;
   systemInstruction: string;
   parts: Array<Record<string, unknown>>;
 }): Promise<string> {
@@ -817,7 +809,7 @@ async function generateGeminiJsonText(input: {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-goog-api-key': GEMINI_API_KEY,
+      'x-goog-api-key': input.apiKey,
     },
     body: JSON.stringify({
       system_instruction: {
@@ -855,11 +847,13 @@ async function generateGeminiJsonText(input: {
 
 async function generateTextPlan(input: {
   text: string;
+  apiKey: string;
   accounts: AiAccountCandidate[];
   todayDate: string;
 }): Promise<TextPlannerOutput> {
   const responseText = await generateGeminiJsonText({
     url: GEMINI_TEXT_URL,
+    apiKey: input.apiKey,
     systemInstruction: 'You are a deterministic finance text step planner.',
     parts: [
       {
@@ -888,11 +882,13 @@ async function generateTextPlan(input: {
 async function generateImageOcr(input: {
   imageBase64: string;
   mimeType: string;
+  apiKey: string;
   fallbackDate: string;
   userNote?: string;
 }) {
   const responseText = await generateGeminiJsonText({
     url: GEMINI_IMAGE_URL,
+    apiKey: input.apiKey,
     systemInstruction: 'You are a deterministic OCR and multimodal screenshot normalizer.',
     parts: [
       {
@@ -918,12 +914,14 @@ async function generateImageOcr(input: {
 
 async function generateImagePlan(input: {
   normalizedText: string;
+  apiKey: string;
   accounts: AiAccountCandidate[];
   userInstruction?: string;
   conflictNotes?: string;
 }) {
   const responseText = await generateGeminiJsonText({
     url: GEMINI_TEXT_URL,
+    apiKey: input.apiKey,
     systemInstruction: 'You are a deterministic multimodal finance step planner.',
     parts: [
       {
@@ -988,16 +986,13 @@ function resolvePlannedStepPayload(
     case 'create_account':
       return step.payload;
     case 'create_assets_expense':
-      return {
-        ...step.payload,
-        accountId: resolveAliasReference(step.payload.accountId, aliases),
-        date: dateOnlyToShanghaiMidnightUtcIso(step.payload.date),
-      };
     case 'create_expense':
+      // step.payload.date is already a plain YYYY-MM-DD (DateOnlySchema); the
+      // ledger's transaction_date column is DATE, so no timezone conversion
+      // belongs here.
       return {
         ...step.payload,
         accountId: resolveAliasReference(step.payload.accountId, aliases),
-        date: dateOnlyToShanghaiMidnightUtcIso(step.payload.date),
       };
     case 'create_transfer':
       return {
@@ -1090,11 +1085,17 @@ export async function createByIntentFromText(
   input: CreateByIntentFromTextInput,
 ): Promise<CreateByIntentFromTextResult> {
   const { text, traceId } = CreateByIntentFromTextInputSchema.parse(input);
-  const context = await requireSessionContext();
-  const accounts = await getAccounts(context);
+  const { db, userId } = await getSessionContext();
+  const apiKey = await getApiKey(db, userId, 'gemini');
+  if (!apiKey) {
+    throw new Error('No Gemini API key configured. Add one in Settings to enable AI-assisted entry.');
+  }
+
+  const accounts = await getAccounts();
   const aiAccounts = buildAiAccountCandidates(accounts, AI_ACCOUNT_TYPES);
   const plan = await generateTextPlan({
     text,
+    apiKey,
     accounts: aiAccounts,
     todayDate: getShanghaiTodayDate(),
   });
@@ -1121,13 +1122,19 @@ export async function createByIntentFromImage(
 ): Promise<CreateByIntentFromImageResult> {
   const { imageBase64, mimeType, text, traceId } =
     CreateByIntentFromImageInputSchema.parse(input);
-  const context = await requireSessionContext();
-  const accounts = await getAccounts(context);
+  const { db, userId } = await getSessionContext();
+  const apiKey = await getApiKey(db, userId, 'gemini');
+  if (!apiKey) {
+    throw new Error('No Gemini API key configured. Add one in Settings to enable AI-assisted entry.');
+  }
+
+  const accounts = await getAccounts();
   const aiAccounts = buildAiAccountCandidates(accounts, AI_ACCOUNT_TYPES);
   const fallbackDate = getShanghaiTodayDate();
   const ocrResult = await generateImageOcr({
     imageBase64,
     mimeType,
+    apiKey,
     fallbackDate,
     userNote: text,
   });
@@ -1141,6 +1148,7 @@ export async function createByIntentFromImage(
   const conflictNotes = ocrResult.conflict_notes ?? null;
   const plan = await generateImagePlan({
     normalizedText,
+    apiKey,
     accounts: aiAccounts,
     userInstruction: userInstruction ?? undefined,
     conflictNotes: conflictNotes ?? undefined,

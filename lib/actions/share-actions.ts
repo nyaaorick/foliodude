@@ -1,20 +1,16 @@
-'use server';
-
 import { z } from 'zod';
 import Decimal from 'decimal.js';
-import { revalidatePath } from 'next/cache';
-import { getSessionContext, type RequestSessionContext } from '@/lib/supabase/server';
+import { getSessionContext } from '@/lib/db/session';
+import { getApiKey } from '@/lib/db/settings';
+import { loadAccount } from '@/lib/db/ledger';
+import { one } from '@/lib/db/sql';
 import { AccountType } from '@/lib/types/accounts';
 import { TransactionType, type Transaction } from '@/lib/types/transactions';
-import {
-  roundMoneyDecimal,
-  roundSharesDecimal,
-} from '@/lib/utils/financial-analytics';
+import { roundMoneyDecimal, roundSharesDecimal } from '@/lib/utils/financial-analytics';
 import { fetchStockPrices } from '@/lib/utils/stock-price';
+import type { Queryable } from '@/lib/db/session';
 
-type ActionResult<T> =
-  | { success: true; data: T }
-  | { success: false; error: string };
+type ActionResult<T> = { success: true; data: T } | { success: false; error: string };
 
 const ShareTradeSchema = z.object({
   shareAccountId: z.string().uuid(),
@@ -27,140 +23,124 @@ const ShareTradeSchema = z.object({
 
 interface ShareAccountRow {
   id: string;
-  user_id: string;
   type: AccountType;
-  currency: string;
-  balance: number;
   ticker: string | null;
   brokerage_account_id: string | null;
   shares: number;
   cost_basis: number;
-  last_price: number | null;
-  last_price_at: string | null;
 }
 
 interface CashAccountRow {
   id: string;
-  user_id: string;
   type: AccountType;
   currency: string;
   balance: number;
 }
 
-type SupabaseClient = RequestSessionContext['supabase'];
-
-async function getAuthorizedUser() {
-  return getSessionContext();
-}
-
 async function loadShareAccount(
-  supabase: SupabaseClient,
+  db: Queryable,
   userId: string,
   shareAccountId: string,
 ): Promise<ActionResult<ShareAccountRow>> {
-  const { data: shareAccount, error } = await supabase
-    .from('accounts')
-    .select(
-      'id, user_id, type, currency, balance, ticker, brokerage_account_id, shares, cost_basis, last_price, last_price_at',
-    )
-    .eq('id', shareAccountId)
-    .eq('user_id', userId)
-    .single();
-
-  if (error || !shareAccount) {
-    return {
-      success: false,
-      error: error?.message ?? 'Share account not found',
-    };
+  try {
+    const account = await loadAccount<ShareAccountRow>(
+      db,
+      userId,
+      shareAccountId,
+      'id, type, ticker, brokerage_account_id, shares, cost_basis',
+      'Share account not found',
+    );
+    if (account.type !== AccountType.SHARE) {
+      return { success: false, error: 'Selected account is not a share account' };
+    }
+    return { success: true, data: account };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
-
-  if (shareAccount.type !== AccountType.SHARE) {
-    return { success: false, error: 'Selected account is not a share account' };
-  }
-
-  return {
-    success: true,
-    data: shareAccount as ShareAccountRow,
-  };
 }
 
 async function loadCashAccount(
-  supabase: SupabaseClient,
+  db: Queryable,
   userId: string,
   brokerageAccountId: string,
 ): Promise<ActionResult<CashAccountRow>> {
-  const { data: brokerageAccount, error } = await supabase
-    .from('accounts')
-    .select('id, user_id, type, currency, balance')
-    .eq('id', brokerageAccountId)
-    .eq('user_id', userId)
-    .single();
-
-  if (error || !brokerageAccount) {
-    return {
-      success: false,
-      error: error?.message ?? 'Brokerage cash account not found',
-    };
+  try {
+    const account = await loadAccount<CashAccountRow>(
+      db,
+      userId,
+      brokerageAccountId,
+      'id, type, currency, balance',
+      'Brokerage cash account not found',
+    );
+    if (account.type !== AccountType.ASSET) {
+      return { success: false, error: 'Brokerage cash account must be an asset account' };
+    }
+    if (account.currency !== 'USD') {
+      return { success: false, error: 'Brokerage cash account must use USD' };
+    }
+    return { success: true, data: account };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
-
-  if (brokerageAccount.type !== AccountType.ASSET) {
-    return { success: false, error: 'Brokerage cash account must be an asset account' };
-  }
-
-  if (brokerageAccount.currency !== 'USD') {
-    return { success: false, error: 'Brokerage cash account must use USD' };
-  }
-
-  return { success: true, data: brokerageAccount as CashAccountRow };
 }
 
-function revalidateSharePaths(shareAccountId: string, brokerageAccountId: string) {
-  revalidatePath('/accounts');
-  revalidatePath(`/accounts/${shareAccountId}`);
-  revalidatePath(`/accounts/${brokerageAccountId}`);
+/**
+ * Recompute a share account's mark-to-market balance and persist a price.
+ * Shared by the trade paths, `refreshSharePrices`, and `setSharePrice` — all
+ * four end at "this account's price is now X as of today."
+ */
+async function applySharePrice(
+  db: Queryable,
+  userId: string,
+  accountId: string,
+  shares: number,
+  price: number,
+): Promise<void> {
+  const balance = roundMoneyDecimal(new Decimal(shares).mul(price));
+  await db.query(
+    `UPDATE accounts SET last_price = $1, last_price_date = CURRENT_DATE, balance = $2
+      WHERE id = $3 AND user_id = $4`,
+    [price, balance.toNumber(), accountId, userId],
+  );
 }
 
-export async function buyShare(
+/**
+ * Buy-share logic, callable either standalone (wrapped in its own transaction
+ * by `buyShare`) or from inside a caller's existing transaction — PGlite has
+ * one embedded connection and no nested-transaction support, so
+ * `createShareAccount`'s initial-position purchase calls this directly with
+ * its own `tx` rather than have `buyShare` open a second one.
+ *
+ * No optimistic-concurrency retry is needed here (unlike the old multi-round-
+ * trip Supabase client): the transaction already serializes the read-then-write,
+ * and PGlite has no concurrent writer to race against in the first place.
+ */
+export async function buyShareWithinTransaction(
+  db: Queryable,
+  userId: string,
   input: z.infer<typeof ShareTradeSchema>,
 ): Promise<ActionResult<{ transaction: Transaction }>> {
-  const auth = await getAuthorizedUser();
-  if (!auth) {
-    return { success: false, error: 'Unauthorized' };
-  }
-
   const parsed = ShareTradeSchema.safeParse(input);
   if (!parsed.success) {
-    return { success: false, error: parsed.error.issues[0].message };
+    return { success: false, error: parsed.error.issues[0]?.message ?? 'Invalid trade input' };
   }
+  const { shareAccountId, brokerageAccountId, quantity, price, fee, memo } = parsed.data;
 
-  const { shareAccountId, brokerageAccountId, quantity, price, fee, memo } =
-    parsed.data;
-
-  const shareLoad = await loadShareAccount(auth.supabase, auth.userId, shareAccountId);
-  if (!shareLoad.success) {
-    return shareLoad;
-  }
-
-  const supabase = auth.supabase;
+  const shareLoad = await loadShareAccount(db, userId, shareAccountId);
+  if (!shareLoad.success) return shareLoad;
   const shareAccount = shareLoad.data;
 
   if (shareAccount.brokerage_account_id !== brokerageAccountId) {
-    return {
-      success: false,
-      error: 'This share account is not linked to the selected cash account',
-    };
+    return { success: false, error: 'This share account is not linked to the selected cash account' };
   }
-
   if (!shareAccount.ticker) {
     return { success: false, error: 'Share account ticker is missing' };
   }
 
-  const cashLoad = await loadCashAccount(supabase, auth.userId, brokerageAccountId);
-  if (!cashLoad.success) {
-    return cashLoad;
-  }
-
+  const cashLoad = await loadCashAccount(db, userId, brokerageAccountId);
+  if (!cashLoad.success) return cashLoad;
   const brokerageAccount = cashLoad.data;
+
   const quantityValue = roundSharesDecimal(quantity);
   const priceValue = new Decimal(price);
   const feeValue = roundMoneyDecimal(fee);
@@ -170,383 +150,251 @@ export async function buyShare(
     return { success: false, error: 'Insufficient cash balance' };
   }
 
-  const nextCashBalance = roundMoneyDecimal(
-    new Decimal(brokerageAccount.balance).minus(cashAmount),
-  );
   const nextShares = roundSharesDecimal(new Decimal(shareAccount.shares).plus(quantityValue));
-  const nextCostBasis = roundMoneyDecimal(
-    new Decimal(shareAccount.cost_basis).plus(cashAmount),
-  );
-  const nextBalance = roundMoneyDecimal(nextShares.mul(priceValue));
-  const transactionAt = new Date().toISOString();
+  const nextCostBasis = roundMoneyDecimal(new Decimal(shareAccount.cost_basis).plus(cashAmount));
   const normalizedMemo = memo?.trim() ? memo.trim() : null;
 
-  const { data: transactionRow, error: insertError } = await supabase
-    .from('transactions')
-    .insert({
-      user_id: auth.userId,
-      type: TransactionType.SHARE_BUY,
-      amount: cashAmount.toNumber(),
-      currency: 'USD',
-      metadata: {},
-      from_account: brokerageAccount.id,
-      to_account: shareAccount.id,
-      category: null,
-      memo: normalizedMemo,
-      share_ticker: shareAccount.ticker,
-      share_quantity: quantityValue.toNumber(),
-      share_price: priceValue.toNumber(),
-      fee: feeValue.toNumber(),
-      transaction_at: transactionAt,
-    })
-    .select()
-    .single();
+  const transaction = await one<Transaction>(
+    db,
+    `INSERT INTO transactions
+       (user_id, type, amount, currency, metadata, from_account, to_account, memo,
+        share_ticker, share_quantity, share_price, fee, transaction_date)
+     VALUES ($1, $2, $3, 'USD', '{}'::jsonb, $4, $5, $6, $7, $8, $9, $10, CURRENT_DATE)
+     RETURNING *`,
+    [
+      userId,
+      TransactionType.SHARE_BUY,
+      cashAmount.toNumber(),
+      brokerageAccount.id,
+      shareAccount.id,
+      normalizedMemo,
+      shareAccount.ticker,
+      quantityValue.toNumber(),
+      priceValue.toNumber(),
+      feeValue.toNumber(),
+    ],
+    'Failed to create share buy transaction',
+  );
 
-  if (insertError || !transactionRow) {
-    return {
-      success: false,
-      error: insertError?.message ?? 'Failed to create share buy transaction',
-    };
-  }
+  await db.query('UPDATE accounts SET balance = balance - $1 WHERE id = $2 AND user_id = $3', [
+    cashAmount.toNumber(),
+    brokerageAccount.id,
+    userId,
+  ]);
 
-  const { data: updatedCashAccount, error: cashUpdateError } = await supabase
-    .from('accounts')
-    .update({ balance: nextCashBalance.toNumber() })
-    .eq('id', brokerageAccount.id)
-    .eq('user_id', auth.userId)
-    .eq('balance', brokerageAccount.balance)
-    .select('id')
-    .single();
+  await db.query(
+    'UPDATE accounts SET shares = $1, cost_basis = $2 WHERE id = $3 AND user_id = $4',
+    [nextShares.toNumber(), nextCostBasis.toNumber(), shareAccount.id, userId],
+  );
+  await applySharePrice(db, userId, shareAccount.id, nextShares.toNumber(), priceValue.toNumber());
 
-  if (cashUpdateError) {
-    return { success: false, error: cashUpdateError.message };
-  }
-
-  if (!updatedCashAccount) {
-    return { success: false, error: 'Cash balance changed, please retry' };
-  }
-
-  const { data: updatedShareAccount, error: shareUpdateError } = await supabase
-    .from('accounts')
-    .update({
-      shares: nextShares.toNumber(),
-      cost_basis: nextCostBasis.toNumber(),
-      last_price: priceValue.toNumber(),
-      last_price_at: transactionAt,
-      balance: nextBalance.toNumber(),
-    })
-    .eq('id', shareAccount.id)
-    .eq('user_id', auth.userId)
-    .eq('shares', shareAccount.shares)
-    .eq('cost_basis', shareAccount.cost_basis)
-    .select('id')
-    .single();
-
-  if (shareUpdateError) {
-    return { success: false, error: shareUpdateError.message };
-  }
-
-  if (!updatedShareAccount) {
-    return { success: false, error: 'Share position changed, please retry' };
-  }
-
-  revalidateSharePaths(shareAccount.id, brokerageAccount.id);
-
-  return {
-    success: true,
-    data: {
-      transaction: transactionRow as unknown as Transaction,
-    },
-  };
+  return { success: true, data: { transaction } };
 }
 
+/** Buy shares, funding the trade from a linked USD cash account. */
+export async function buyShare(
+  input: z.infer<typeof ShareTradeSchema>,
+): Promise<ActionResult<{ transaction: Transaction }>> {
+  const { db, userId } = await getSessionContext();
+  return db.transaction((tx) => buyShareWithinTransaction(tx, userId, input));
+}
+
+/** Sell shares, crediting proceeds to the linked USD cash account. */
 export async function sellShare(
   input: z.infer<typeof ShareTradeSchema>,
 ): Promise<ActionResult<{ transaction: Transaction }>> {
-  const auth = await getAuthorizedUser();
-  if (!auth) {
-    return { success: false, error: 'Unauthorized' };
-  }
-
+  const { db, userId } = await getSessionContext();
   const parsed = ShareTradeSchema.safeParse(input);
   if (!parsed.success) {
-    return { success: false, error: parsed.error.issues[0].message };
+    return { success: false, error: parsed.error.issues[0]?.message ?? 'Invalid trade input' };
   }
+  const { shareAccountId, brokerageAccountId, quantity, price, fee, memo } = parsed.data;
 
-  const { shareAccountId, brokerageAccountId, quantity, price, fee, memo } =
-    parsed.data;
+  return db.transaction(async (tx) => {
+    const shareLoad = await loadShareAccount(tx, userId, shareAccountId);
+    if (!shareLoad.success) return shareLoad;
+    const shareAccount = shareLoad.data;
 
-  const shareLoad = await loadShareAccount(auth.supabase, auth.userId, shareAccountId);
-  if (!shareLoad.success) {
-    return shareLoad;
-  }
+    if (shareAccount.brokerage_account_id !== brokerageAccountId) {
+      return { success: false, error: 'This share account is not linked to the selected cash account' };
+    }
+    if (!shareAccount.ticker) {
+      return { success: false, error: 'Share account ticker is missing' };
+    }
 
-  const supabase = auth.supabase;
-  const shareAccount = shareLoad.data;
+    const cashLoad = await loadCashAccount(tx, userId, brokerageAccountId);
+    if (!cashLoad.success) return cashLoad;
+    const brokerageAccount = cashLoad.data;
 
-  if (shareAccount.brokerage_account_id !== brokerageAccountId) {
-    return {
-      success: false,
-      error: 'This share account is not linked to the selected cash account',
-    };
-  }
+    const quantityValue = roundSharesDecimal(quantity);
+    const priceValue = new Decimal(price);
+    const feeValue = roundMoneyDecimal(fee);
+    const currentShares = new Decimal(shareAccount.shares);
 
-  if (!shareAccount.ticker) {
-    return { success: false, error: 'Share account ticker is missing' };
-  }
+    if (currentShares.lt(quantityValue)) {
+      return { success: false, error: 'Insufficient shares' };
+    }
 
-  const cashLoad = await loadCashAccount(supabase, auth.userId, brokerageAccountId);
-  if (!cashLoad.success) {
-    return cashLoad;
-  }
+    const cashAmount = roundMoneyDecimal(quantityValue.mul(priceValue).minus(feeValue));
+    if (cashAmount.lte(0)) {
+      return { success: false, error: 'Sell proceeds must be greater than 0' };
+    }
 
-  const brokerageAccount = cashLoad.data;
-  const quantityValue = roundSharesDecimal(quantity);
-  const priceValue = new Decimal(price);
-  const feeValue = roundMoneyDecimal(fee);
-  const currentShares = new Decimal(shareAccount.shares);
+    const nextSharesRaw = roundSharesDecimal(currentShares.minus(quantityValue));
+    const isCleared = nextSharesRaw.lte(0);
+    const averageCost = currentShares.gt(0)
+      ? new Decimal(shareAccount.cost_basis).div(currentShares)
+      : new Decimal(0);
+    const reducedCost = roundMoneyDecimal(averageCost.mul(quantityValue));
+    const nextCostBasis = isCleared
+      ? new Decimal(0)
+      : Decimal.max(roundMoneyDecimal(new Decimal(shareAccount.cost_basis).minus(reducedCost)), new Decimal(0));
+    const nextShares = isCleared ? new Decimal(0) : nextSharesRaw;
+    const normalizedMemo = memo?.trim() ? memo.trim() : null;
 
-  if (currentShares.lt(quantityValue)) {
-    return { success: false, error: 'Insufficient shares' };
-  }
+    const transaction = await one<Transaction>(
+      tx,
+      `INSERT INTO transactions
+         (user_id, type, amount, currency, metadata, from_account, to_account, memo,
+          share_ticker, share_quantity, share_price, fee, transaction_date)
+       VALUES ($1, $2, $3, 'USD', '{}'::jsonb, $4, $5, $6, $7, $8, $9, $10, CURRENT_DATE)
+       RETURNING *`,
+      [
+        userId,
+        TransactionType.SHARE_SELL,
+        cashAmount.toNumber(),
+        shareAccount.id,
+        brokerageAccount.id,
+        normalizedMemo,
+        shareAccount.ticker,
+        quantityValue.toNumber(),
+        priceValue.toNumber(),
+        feeValue.toNumber(),
+      ],
+      'Failed to create share sell transaction',
+    );
 
-  const grossProceeds = quantityValue.mul(priceValue);
-  const cashAmount = roundMoneyDecimal(grossProceeds.minus(feeValue));
-  if (cashAmount.lte(0)) {
-    return { success: false, error: 'Sell proceeds must be greater than 0' };
-  }
+    await tx.query('UPDATE accounts SET balance = balance + $1 WHERE id = $2 AND user_id = $3', [
+      cashAmount.toNumber(),
+      brokerageAccount.id,
+      userId,
+    ]);
 
-  const nextCashBalance = roundMoneyDecimal(
-    new Decimal(brokerageAccount.balance).plus(cashAmount),
-  );
-  const nextSharesRaw = roundSharesDecimal(currentShares.minus(quantityValue));
-  const isCleared = nextSharesRaw.lte(0);
-  const averageCost = currentShares.gt(0)
-    ? new Decimal(shareAccount.cost_basis).div(currentShares)
-    : new Decimal(0);
-  const reducedCost = roundMoneyDecimal(averageCost.mul(quantityValue));
-  const nextCostBasis = isCleared
-    ? new Decimal(0)
-    : Decimal.max(
-        roundMoneyDecimal(new Decimal(shareAccount.cost_basis).minus(reducedCost)),
-        new Decimal(0),
-      );
-  const nextShares = isCleared ? new Decimal(0) : nextSharesRaw;
-  const nextBalance = isCleared
-    ? new Decimal(0)
-    : roundMoneyDecimal(nextShares.mul(priceValue));
-  const transactionAt = new Date().toISOString();
-  const normalizedMemo = memo?.trim() ? memo.trim() : null;
+    await tx.query(
+      'UPDATE accounts SET shares = $1, cost_basis = $2 WHERE id = $3 AND user_id = $4',
+      [nextShares.toNumber(), nextCostBasis.toNumber(), shareAccount.id, userId],
+    );
+    await applySharePrice(
+      tx,
+      userId,
+      shareAccount.id,
+      nextShares.toNumber(),
+      isCleared ? 0 : priceValue.toNumber(),
+    );
 
-  const { data: transactionRow, error: insertError } = await supabase
-    .from('transactions')
-    .insert({
-      user_id: auth.userId,
-      type: TransactionType.SHARE_SELL,
-      amount: cashAmount.toNumber(),
-      currency: 'USD',
-      metadata: {},
-      from_account: shareAccount.id,
-      to_account: brokerageAccount.id,
-      category: null,
-      memo: normalizedMemo,
-      share_ticker: shareAccount.ticker,
-      share_quantity: quantityValue.toNumber(),
-      share_price: priceValue.toNumber(),
-      fee: feeValue.toNumber(),
-      transaction_at: transactionAt,
-    })
-    .select()
-    .single();
-
-  if (insertError || !transactionRow) {
-    return {
-      success: false,
-      error: insertError?.message ?? 'Failed to create share sell transaction',
-    };
-  }
-
-  const { data: updatedCashAccount, error: cashUpdateError } = await supabase
-    .from('accounts')
-    .update({ balance: nextCashBalance.toNumber() })
-    .eq('id', brokerageAccount.id)
-    .eq('user_id', auth.userId)
-    .eq('balance', brokerageAccount.balance)
-    .select('id')
-    .single();
-
-  if (cashUpdateError) {
-    return { success: false, error: cashUpdateError.message };
-  }
-
-  if (!updatedCashAccount) {
-    return { success: false, error: 'Cash balance changed, please retry' };
-  }
-
-  const { data: updatedShareAccount, error: shareUpdateError } = await supabase
-    .from('accounts')
-    .update({
-      shares: nextShares.toNumber(),
-      cost_basis: nextCostBasis.toNumber(),
-      last_price: priceValue.toNumber(),
-      last_price_at: transactionAt,
-      balance: nextBalance.toNumber(),
-    })
-    .eq('id', shareAccount.id)
-    .eq('user_id', auth.userId)
-    .eq('shares', shareAccount.shares)
-    .eq('cost_basis', shareAccount.cost_basis)
-    .select('id')
-    .single();
-
-  if (shareUpdateError) {
-    return { success: false, error: shareUpdateError.message };
-  }
-
-  if (!updatedShareAccount) {
-    return { success: false, error: 'Share position changed, please retry' };
-  }
-
-  revalidateSharePaths(shareAccount.id, brokerageAccount.id);
-
-  return {
-    success: true,
-    data: {
-      transaction: transactionRow as unknown as Transaction,
-    },
-  };
+    return { success: true, data: { transaction } };
+  });
 }
 
+interface RefreshCandidate {
+  id: string;
+  ticker: string;
+  shares: number;
+}
+
+/**
+ * Pull live prices for every SHARE account and mark-to-market its balance.
+ *
+ * "Fresh" now means "already priced today" — `last_price_date` is a DATE (see
+ * PLAN.md's day-granularity decision), so there is no sub-day staleness to
+ * measure. `force` re-fetches regardless.
+ */
 export async function refreshSharePrices(
   input?: { force?: boolean },
 ): Promise<ActionResult<{ updated: number; failed: string[]; freshSkipped: number }>> {
-  const auth = await getAuthorizedUser();
-  if (!auth) {
-    return { success: false, error: 'Unauthorized' };
-  }
-
+  const { db, userId } = await getSessionContext();
   const force = Boolean(input?.force);
-  const stalenessMs = 10_000;
 
-  const supabase = auth.supabase;
-  const { data: shareAccounts, error } = await supabase
-    .from('accounts')
-    .select('id, ticker, shares, last_price_at')
-    .eq('user_id', auth.userId)
-    .eq('type', AccountType.SHARE);
+  const staleAccounts = await db.query<RefreshCandidate>(
+    `SELECT id, ticker, shares FROM accounts
+      WHERE user_id = $1 AND type = 'SHARE' AND ticker IS NOT NULL
+        AND ($2 OR last_price_date IS DISTINCT FROM CURRENT_DATE)`,
+    [userId, force],
+  );
+  const totalShareAccounts = await one<{ count: number }>(
+    db,
+    `SELECT count(*)::int AS count FROM accounts WHERE user_id = $1 AND type = 'SHARE' AND ticker IS NOT NULL`,
+    [userId],
+    'Failed to count share accounts',
+  );
+  const freshSkipped = totalShareAccounts.count - staleAccounts.rows.length;
 
-  if (error) {
-    return { success: false, error: error.message };
-  }
-
-  const now = Date.now();
-  const validAccounts = (shareAccounts ?? []).filter((account) => Boolean(account.ticker));
-  const staleAccounts = force
-    ? validAccounts
-    : validAccounts.filter((account) => {
-        const last = account.last_price_at ? Date.parse(String(account.last_price_at)) : NaN;
-        return !Number.isFinite(last) || now - last > stalenessMs;
-      });
-  const freshSkipped = validAccounts.length - staleAccounts.length;
-
-  if (validAccounts.length === 0) {
+  if (totalShareAccounts.count === 0) {
     return { success: true, data: { updated: 0, failed: [], freshSkipped: 0 } };
   }
-
-  if (staleAccounts.length === 0) {
+  if (staleAccounts.rows.length === 0) {
     return { success: true, data: { updated: 0, failed: [], freshSkipped } };
   }
 
+  const apiKey = await getApiKey(db, userId, 'finnhub');
   let prices: Record<string, number>;
-
   try {
     prices = await fetchStockPrices(
-      staleAccounts
-        .map((account) => String(account.ticker).trim().toUpperCase())
-        .filter(Boolean),
+      staleAccounts.rows.map((a) => a.ticker.trim().toUpperCase()),
+      apiKey,
     );
-  } catch (refreshError) {
-    return {
-      success: false,
-      error:
-        refreshError instanceof Error
-          ? refreshError.message
-          : 'Failed to refresh share prices',
-    };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Failed to refresh share prices' };
   }
 
-  const refreshedAt = new Date().toISOString();
   const failed: string[] = [];
-  const updateResults = await Promise.allSettled(
-    staleAccounts.map(async (account) => {
-      const ticker = String(account.ticker).trim().toUpperCase();
-      const price = prices[ticker];
-
-      if (typeof price !== 'number') {
-        return { ticker, accountId: account.id, updated: false as const };
-      }
-
-      try {
-        const nextBalance = roundMoneyDecimal(new Decimal(account.shares).mul(price));
-        const { error: updateError } = await supabase
-          .from('accounts')
-          .update({
-            last_price: price,
-            last_price_at: refreshedAt,
-            balance: nextBalance.toNumber(),
-          })
-          .eq('id', account.id)
-          .eq('user_id', auth.userId);
-
-        if (updateError) {
-          return { ticker, accountId: account.id, updated: false as const };
-        }
-
-        return { ticker, accountId: account.id, updated: true as const };
-      } catch (error) {
-        throw { ticker, error };
-      }
-    }),
-  );
-
   let updated = 0;
 
-  for (const result of updateResults) {
-    if (result.status === 'fulfilled') {
-      if (!result.value.updated) {
-        failed.push(result.value.ticker);
-        continue;
-      }
-
-      updated += 1;
-      revalidatePath(`/accounts/${result.value.accountId}`);
+  for (const account of staleAccounts.rows) {
+    const ticker = account.ticker.trim().toUpperCase();
+    const price = prices[ticker];
+    if (typeof price !== 'number') {
+      failed.push(ticker);
       continue;
     }
-
-    const reason =
-      result.reason && typeof result.reason === 'object'
-        ? (result.reason as { ticker?: unknown })
-        : null;
-    failed.push(
-      typeof reason?.ticker === 'string' ? reason.ticker : 'UNKNOWN',
-    );
+    await applySharePrice(db, userId, account.id, account.shares, price);
+    updated += 1;
   }
 
-  if (updated === 0 && failed.length === staleAccounts.length) {
-    return {
-      success: false,
-      error: 'Failed to refresh prices for all symbols',
-    };
+  if (updated === 0 && failed.length === staleAccounts.rows.length) {
+    return { success: false, error: 'Failed to refresh prices for all symbols' };
   }
 
-  revalidatePath('/accounts');
+  return { success: true, data: { updated, failed, freshSkipped } };
+}
 
-  return {
-    success: true,
-    data: {
-      updated,
-      failed,
-      freshSkipped,
-    },
-  };
+const SetSharePriceSchema = z.object({
+  accountId: z.string().uuid(),
+  price: z.number().positive(),
+});
+
+/**
+ * User correction to a SHARE account's price — e.g. the API returned a stale
+ * or wrong quote, or the market is closed and today's actual fill differs.
+ * Writes through the same `applySharePrice` path `refreshSharePrices` uses, so
+ * a manual value is indistinguishable in shape from a fetched one; only
+ * `last_price_date` (today) says when it was last touched.
+ */
+export async function setSharePrice(
+  input: z.infer<typeof SetSharePriceSchema>,
+): Promise<ActionResult<{ balance: number }>> {
+  const { db, userId } = await getSessionContext();
+  const parsed = SetSharePriceSchema.safeParse(input);
+  if (!parsed.success) {
+    return { success: false, error: parsed.error.issues[0]?.message ?? 'Invalid price' };
+  }
+
+  return db.transaction(async (tx) => {
+    const shareLoad = await loadShareAccount(tx, userId, parsed.data.accountId);
+    if (!shareLoad.success) return shareLoad;
+
+    await applySharePrice(tx, userId, parsed.data.accountId, shareLoad.data.shares, parsed.data.price);
+    const balance = roundMoneyDecimal(new Decimal(shareLoad.data.shares).mul(parsed.data.price));
+    return { success: true, data: { balance: balance.toNumber() } };
+  });
 }

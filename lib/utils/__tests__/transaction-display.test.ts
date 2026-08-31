@@ -31,7 +31,7 @@ function makeTransaction(
     share_quantity: null,
     share_price: null,
     fee: null,
-    transaction_at: '2026-03-16T00:00:00.000Z',
+    transaction_date: '2026-03-16T00:00:00.000Z',
     created_at: '2026-03-16T00:00:00.000Z',
     ...overrides,
   };

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useNavigate } from 'react-router-dom';
 import { createRewardTransaction } from '@/lib/actions/reward-actions';
 import { TransactionType } from '@/lib/types/transactions';
 import { getTransactionTypeLabel } from '@/lib/utils/display-labels';
@@ -35,7 +35,7 @@ export function CreateRewardTransactionDialog({
   accountId,
   triggerLabel,
 }: CreateRewardTransactionDialogProps) {
-  const router = useRouter();
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [direction, setDirection] = useState<
     TransactionType.REWARD_TRANSFER_IN | TransactionType.REWARD_REDEEM
@@ -72,7 +72,7 @@ export function CreateRewardTransactionDialog({
       });
 
       setOpen(false);
-      router.refresh();
+      navigate(0);
     } catch (error) {
       if (!(error instanceof Error)) {
         throw error;

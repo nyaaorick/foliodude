@@ -3,16 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fetchUsdExchangeRates } from '@/lib/utils/fx-rates';
 
 describe('fetchUsdExchangeRates', () => {
-  const originalKey = process.env.EXCHANGE_RATE_API_KEY;
   const originalFetch = global.fetch;
 
   beforeEach(() => {
-    process.env.EXCHANGE_RATE_API_KEY = 'test-key';
     global.fetch = vi.fn();
   });
 
   afterEach(() => {
-    process.env.EXCHANGE_RATE_API_KEY = originalKey;
     global.fetch = originalFetch;
     vi.restoreAllMocks();
   });
@@ -22,85 +19,39 @@ describe('fetchUsdExchangeRates', () => {
       ok: true,
       json: async () => ({
         result: 'success',
-        conversion_rates: {
-          USD: 1,
-          HKD: 7.8,
-          CNH: 7.2,
-          EUR: 0.92,
-        },
+        conversion_rates: { USD: 1, HKD: 7.8, CNH: 7.2, EUR: 0.92 },
       }),
     } as Response);
 
-    const result = await fetchUsdExchangeRates(['USD', 'HKD', 'CNH']);
+    const result = await fetchUsdExchangeRates(['USD', 'HKD', 'CNH'], 'user-key');
 
-    expect(result).toEqual({
-      USD: 1,
-      HKD: 0.128205,
-      CNH: 0.138889,
-    });
+    expect(result).toEqual({ USD: 1, HKD: 0.128205, CNH: 0.138889 });
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/user-key/latest/USD'),
+      expect.anything(),
+    );
   });
 
-  it('returns only requested currencies plus USD', async () => {
-    vi.mocked(global.fetch).mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        result: 'success',
-        conversion_rates: {
-          USD: 1,
-          HKD: 7.8,
-          EUR: 0.92,
-        },
-      }),
-    } as Response);
-
-    const result = await fetchUsdExchangeRates(['HKD']);
-
-    expect(result).toEqual({
-      USD: 1,
-      HKD: 0.128205,
-    });
-  });
-
-  it('falls back to 1:1 when the API key is missing', async () => {
-    delete process.env.EXCHANGE_RATE_API_KEY;
-
-    const result = await fetchUsdExchangeRates(['USD', 'HKD']);
-
-    expect(result).toEqual({
-      USD: 1,
-      HKD: 1,
-    });
+  it('falls back to 1:1 for every currency when no key is configured', async () => {
+    const result = await fetchUsdExchangeRates(['HKD', 'EUR'], null);
+    expect(result).toEqual({ HKD: 1, EUR: 1 });
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it('falls back to 1:1 when the upstream request fails', async () => {
-    vi.mocked(global.fetch).mockRejectedValue(new Error('network error'));
-
-    const result = await fetchUsdExchangeRates(['USD', 'HKD']);
-
-    expect(result).toEqual({
-      USD: 1,
-      HKD: 1,
-    });
+    vi.mocked(global.fetch).mockResolvedValue({ ok: false, status: 500 } as Response);
+    const result = await fetchUsdExchangeRates(['HKD'], 'user-key');
+    expect(result).toEqual({ HKD: 1 });
   });
 
-  it('falls back to 1:1 when a requested currency is missing upstream', async () => {
-    vi.mocked(global.fetch).mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        result: 'success',
-        conversion_rates: {
-          USD: 1,
-          EUR: 0.92,
-        },
-      }),
-    } as Response);
+  it('falls back to 1:1 when fetch throws', async () => {
+    vi.mocked(global.fetch).mockRejectedValue(new Error('network down'));
+    const result = await fetchUsdExchangeRates(['HKD'], 'user-key');
+    expect(result).toEqual({ HKD: 1 });
+  });
 
-    const result = await fetchUsdExchangeRates(['USD', 'HKD']);
-
-    expect(result).toEqual({
-      USD: 1,
-      HKD: 1,
-    });
+  it('returns an empty map for an empty currency list without calling fetch', async () => {
+    expect(await fetchUsdExchangeRates([], 'user-key')).toEqual({});
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 });

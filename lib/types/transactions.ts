@@ -55,7 +55,7 @@ export interface Transaction {
   share_quantity: number | null;
   share_price: number | null;
   fee: number | null;
-  transaction_at: string;
+  transaction_date: string;
   created_at: string;
 }
 
@@ -76,7 +76,7 @@ export interface TransactionWithReward extends Transaction {
 
 export type CreateTransactionInput = Pick<
   Transaction,
-  'type' | 'amount' | 'transaction_at'
+  'type' | 'amount' | 'transaction_date'
 > & {
   currency?: string | null;
   reward_currency?: string | null;

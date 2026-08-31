@@ -1,8 +1,5 @@
-'use client';
-
-import Link from 'next/link';
+import { Link, useNavigate } from 'react-router-dom';
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
 import { EyeOff } from 'lucide-react';
 import { deleteAction } from '@/lib/actions/delete-actions';
 import { AccountType } from '@/lib/types/accounts';
@@ -186,7 +183,7 @@ export function TransactionItem({
   accountType,
   currency,
 }: TransactionItemProps) {
-  const router = useRouter();
+  const navigate = useNavigate();
   const [submitting, setSubmitting] = useState(false);
   const [isHidden, setIsHidden] = useState(false);
   const [error, setError] = useState('');
@@ -220,7 +217,7 @@ export function TransactionItem({
       </div>
 
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
-        <span>{formatDate(transaction.transaction_at)}</span>
+        <span>{formatDate(transaction.transaction_date)}</span>
         {rewardCurrency && (
           <>
             <span>&middot;</span>
@@ -256,7 +253,7 @@ export function TransactionItem({
 
   const mainContent = linkedTargetAccountId ? (
     <Link
-      href={`/accounts/${linkedTargetAccountId}`}
+      to={`/accounts/${linkedTargetAccountId}`}
       className="relative block min-w-0 flex-1 rounded-lg transition-colors hover:bg-muted/20"
     >
       <InlineLinkLoading className="absolute right-3 top-3" />
@@ -298,7 +295,7 @@ export function TransactionItem({
                   return;
                 }
 
-                router.refresh();
+                navigate(0);
               }}
             >
               <EyeOff className="size-4 text-muted-foreground" />

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useNavigate } from 'react-router-dom';
 import {
   AccountType,
   SUPPORTED_CURRENCIES,
@@ -48,7 +48,7 @@ function formatAccountOption(account: AccountWithStats) {
 }
 
 export function CreateAccountDialog({ accounts }: CreateAccountDialogProps) {
-  const router = useRouter();
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [type, setType] = useState<AccountType>(AccountType.ASSET);
   const [name, setName] = useState('');
@@ -167,7 +167,7 @@ export function CreateAccountDialog({ accounts }: CreateAccountDialogProps) {
 
       setOpen(false);
       resetForm();
-      router.refresh();
+      navigate(0);
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Failed to create account');
     } finally {

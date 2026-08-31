@@ -1,419 +1,185 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { AccountType } from '@/lib/types/accounts';
-import { TransactionType } from '@/lib/types/transactions';
 
-const { mockCreateClient, mockRevalidatePath, mockFetchStockPrices } = vi.hoisted(() => ({
-  mockCreateClient: vi.fn(),
-  mockRevalidatePath: vi.fn(),
+const { mockGetSessionContext, mockFetchStockPrices, mockGetApiKey } = vi.hoisted(() => ({
+  mockGetSessionContext: vi.fn(),
   mockFetchStockPrices: vi.fn(),
+  mockGetApiKey: vi.fn(),
 }));
 
-vi.mock('@/lib/supabase/server', () => ({
-  createClient: mockCreateClient,
+vi.mock('@/lib/db/session', () => ({ getSessionContext: mockGetSessionContext }));
+vi.mock('@/lib/utils/stock-price', () => ({ fetchStockPrices: mockFetchStockPrices }));
+vi.mock('@/lib/db/settings', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  getApiKey: mockGetApiKey,
 }));
 
-vi.mock('next/cache', () => ({
-  revalidatePath: mockRevalidatePath,
-}));
-
-vi.mock('@/lib/utils/stock-price', () => ({
-  fetchStockPrices: mockFetchStockPrices,
-}));
-
-import { buyShare, refreshSharePrices, sellShare } from '@/lib/actions/share-actions';
-
-const USER_ID = 'user-1';
-const SHARE_ACCOUNT_ID = '11111111-1111-4111-8111-111111111111';
-const CASH_ACCOUNT_ID = '22222222-2222-4222-8222-222222222222';
-
-interface MockAccountRow {
-  id: string;
-  user_id: string;
-  type: AccountType;
-  currency: string;
-  balance: number;
-  ticker?: string | null;
-  brokerage_account_id?: string | null;
-  shares?: number;
-  cost_basis?: number;
-  last_price?: number | null;
-  last_price_at?: string | null;
-}
-
-function makeShareAccount(
-  overrides: Partial<MockAccountRow> = {},
-): MockAccountRow {
-  return {
-    id: SHARE_ACCOUNT_ID,
-    user_id: USER_ID,
-    type: AccountType.SHARE,
-    currency: 'USD',
-    balance: 1000,
-    ticker: 'AAPL',
-    brokerage_account_id: CASH_ACCOUNT_ID,
-    shares: 10,
-    cost_basis: 800,
-    last_price: 100,
-    last_price_at: '2026-03-16T00:00:00.000Z',
-    ...overrides,
-  };
-}
-
-function makeCashAccount(
-  overrides: Partial<MockAccountRow> = {},
-): MockAccountRow {
-  return {
-    id: CASH_ACCOUNT_ID,
-    user_id: USER_ID,
-    type: AccountType.ASSET,
-    currency: 'USD',
-    balance: 5000,
-    ...overrides,
-  };
-}
-
-function createSupabaseMock(accounts: MockAccountRow[]) {
-  const accountMap = new Map(accounts.map((account) => [account.id, account]));
-  const calls = {
-    insertedTransaction: null as Record<string, unknown> | null,
-    accountUpdates: [] as Array<{
-      payload: Record<string, unknown>;
-      filters: Record<string, unknown>;
-    }>,
-  };
-
-  const accountsTable = {
-    select: vi.fn(() => {
-      const filters: Record<string, unknown> = {};
-
-      return {
-        eq(key: string, value: unknown) {
-          filters[key] = value;
-          return this;
-        },
-        single() {
-          const row = accountMap.get(String(filters.id));
-
-          if (!row) {
-            return Promise.resolve({
-              data: null,
-              error: { message: 'Account not found' },
-            });
-          }
-
-          if (filters.user_id && row.user_id !== filters.user_id) {
-            return Promise.resolve({
-              data: null,
-              error: { message: 'Account not found' },
-            });
-          }
-
-          return Promise.resolve({ data: row, error: null });
-        },
-      };
-    }),
-    update: vi.fn((payload: Record<string, unknown>) => {
-      const filters: Record<string, unknown> = {};
-      calls.accountUpdates.push({ payload, filters });
-
-      return {
-        eq(key: string, value: unknown) {
-          filters[key] = value;
-          return this;
-        },
-        select() {
-          return this;
-        },
-        single() {
-          return Promise.resolve({ data: { id: filters.id }, error: null });
-        },
-      };
-    }),
-  };
-
-  const transactionsTable = {
-    insert: vi.fn((payload: Record<string, unknown>) => {
-      calls.insertedTransaction = payload;
-
-      return {
-        select() {
-          return this;
-        },
-        single() {
-          return Promise.resolve({
-            data: {
-              id: 'tx-1',
-              user_id: USER_ID,
-              type: payload.type,
-              amount: payload.amount,
-              currency: 'USD',
-              from_account: payload.from_account,
-              to_account: payload.to_account,
-              category: null,
-              memo: payload.memo ?? null,
-              share_ticker: payload.share_ticker ?? null,
-              share_quantity: payload.share_quantity ?? null,
-              share_price: payload.share_price ?? null,
-              fee: payload.fee ?? null,
-              transaction_at: '2026-03-16T00:00:00.000Z',
-              created_at: '2026-03-16T00:00:00.000Z',
-            },
-            error: null,
-          });
-        },
-      };
-    }),
-  };
-
-  return {
-    calls,
-    supabase: {
-      auth: {
-        getUser: vi.fn().mockResolvedValue({ data: { user: { id: USER_ID } } }),
-      },
-      from: vi.fn((table: string) => {
-        if (table === 'accounts') return accountsTable;
-        if (table === 'transactions') return transactionsTable;
-        throw new Error(`Unexpected table: ${table}`);
-      }),
-    },
-  };
-}
+import { buyShare, refreshSharePrices, sellShare, setSharePrice } from '@/lib/actions/share-actions';
+import { createTestContext, getAccount, seedAccount } from '@/lib/db/testing';
+import type { SessionContext } from '@/lib/db/session';
 
 describe('share actions', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+  let ctx: SessionContext;
+
+  beforeEach(async () => {
+    ctx = await createTestContext();
+    mockGetSessionContext.mockResolvedValue(ctx);
+    mockGetApiKey.mockResolvedValue('test-finnhub-key');
   });
 
+  async function seedShareSetup() {
+    const brokerageId = await seedAccount(ctx, { type: 'ASSET', currency: 'USD', balance: 10_000 });
+    const shareId = await seedAccount(ctx, {
+      type: 'SHARE',
+      currency: 'USD',
+      brokerage: 'IBKR',
+      ticker: 'AAPL',
+      brokerage_account_id: brokerageId,
+    });
+    return { brokerageId, shareId };
+  }
+
   it('records a buy and updates cash plus position balances', async () => {
-    const { supabase, calls } = createSupabaseMock([
-      makeShareAccount(),
-      makeCashAccount(),
-    ]);
-    mockCreateClient.mockResolvedValue(supabase);
+    const { brokerageId, shareId } = await seedShareSetup();
 
     const result = await buyShare({
-      shareAccountId: SHARE_ACCOUNT_ID,
-      brokerageAccountId: CASH_ACCOUNT_ID,
-      quantity: 2,
+      shareAccountId: shareId,
+      brokerageAccountId: brokerageId,
+      quantity: 10,
       price: 150,
-      fee: 5,
-      memo: 'buy more',
+      fee: 1,
     });
 
     expect(result.success).toBe(true);
-    expect(calls.insertedTransaction).toMatchObject({
-      type: TransactionType.SHARE_BUY,
-      amount: 305,
-      from_account: CASH_ACCOUNT_ID,
-      to_account: SHARE_ACCOUNT_ID,
-      share_ticker: 'AAPL',
-      share_quantity: 2,
-      share_price: 150,
-      fee: 5,
-    });
-    expect(calls.accountUpdates).toHaveLength(2);
-    expect(calls.accountUpdates[0]?.payload).toEqual({ balance: 4695 });
-    expect(calls.accountUpdates[1]?.payload).toEqual({
-      shares: 12,
-      cost_basis: 1105,
-      last_price: 150,
-      last_price_at: expect.any(String),
-      balance: 1800,
-    });
-    expect(mockCreateClient).toHaveBeenCalledTimes(1);
+    if (!result.success) throw new Error('unreachable');
+    expect(result.data.transaction).toMatchObject({ type: 'SHARE_BUY', amount: 1501 });
+
+    const brokerage = await getAccount(ctx.db, brokerageId);
+    expect(brokerage.balance).toBe(8499); // 10000 - (10*150 + 1)
+
+    const share = await getAccount(ctx.db, shareId);
+    expect(share).toMatchObject({ shares: 10, cost_basis: 1501, last_price: 150, balance: 1500 });
+    expect(share.last_price_date).toBeTruthy();
   });
 
   it('rejects a buy when cash is insufficient', async () => {
-    const { supabase } = createSupabaseMock([
-      makeShareAccount(),
-      makeCashAccount({ balance: 100 }),
-    ]);
-    mockCreateClient.mockResolvedValue(supabase);
+    const { brokerageId, shareId } = await seedShareSetup();
 
     const result = await buyShare({
-      shareAccountId: SHARE_ACCOUNT_ID,
-      brokerageAccountId: CASH_ACCOUNT_ID,
-      quantity: 1,
+      shareAccountId: shareId,
+      brokerageAccountId: brokerageId,
+      quantity: 1000,
       price: 150,
-      fee: 1,
-      memo: 'too expensive',
+      fee: 0,
     });
 
     expect(result).toEqual({ success: false, error: 'Insufficient cash balance' });
+    // No partial writes on a rejected trade.
+    expect((await getAccount(ctx.db, brokerageId)).balance).toBe(10_000);
+    expect((await getAccount(ctx.db, shareId)).shares).toBe(0);
   });
 
   it('records a sell and clears the position when all shares are sold', async () => {
-    const { supabase, calls } = createSupabaseMock([
-      makeShareAccount({ balance: 1000, shares: 5, cost_basis: 400 }),
-      makeCashAccount({ balance: 1000 }),
-    ]);
-    mockCreateClient.mockResolvedValue(supabase);
+    const { brokerageId, shareId } = await seedShareSetup();
+    await buyShare({ shareAccountId: shareId, brokerageAccountId: brokerageId, quantity: 10, price: 150, fee: 1 });
 
     const result = await sellShare({
-      shareAccountId: SHARE_ACCOUNT_ID,
-      brokerageAccountId: CASH_ACCOUNT_ID,
-      quantity: 5,
-      price: 120,
-      fee: 10,
-      memo: 'exit',
+      shareAccountId: shareId,
+      brokerageAccountId: brokerageId,
+      quantity: 10,
+      price: 160,
+      fee: 2,
     });
 
     expect(result.success).toBe(true);
-    expect(calls.insertedTransaction).toMatchObject({
-      type: TransactionType.SHARE_SELL,
-      amount: 590,
-      from_account: SHARE_ACCOUNT_ID,
-      to_account: CASH_ACCOUNT_ID,
-      share_quantity: 5,
-      share_price: 120,
-      fee: 10,
-    });
-    expect(calls.accountUpdates[0]?.payload).toEqual({ balance: 1590 });
-    expect(calls.accountUpdates[1]?.payload).toEqual({
-      shares: 0,
-      cost_basis: 0,
-      last_price: 120,
-      last_price_at: expect.any(String),
-      balance: 0,
-    });
-    expect(mockCreateClient).toHaveBeenCalledTimes(1);
+    if (!result.success) throw new Error('unreachable');
+    expect(result.data.transaction).toMatchObject({ type: 'SHARE_SELL', amount: 1598 });
+
+    const share = await getAccount(ctx.db, shareId);
+    // Position fully closed: cost basis and mark-to-market balance both zero.
+    expect(share).toMatchObject({ shares: 0, cost_basis: 0, balance: 0 });
+
+    const brokerage = await getAccount(ctx.db, brokerageId);
+    expect(brokerage.balance).toBe(8499 + 1598);
   });
 
-  it('reuses the authorized client when refreshing share prices', async () => {
-    const shareAccounts = [
-      {
-        id: SHARE_ACCOUNT_ID,
-        ticker: 'AAPL',
-        shares: 10,
-        last_price_at: null,
-      },
-    ];
+  it('rejects selling more shares than are held', async () => {
+    const { brokerageId, shareId } = await seedShareSetup();
+    await buyShare({ shareAccountId: shareId, brokerageAccountId: brokerageId, quantity: 5, price: 100, fee: 0 });
 
-    mockFetchStockPrices.mockResolvedValue({ AAPL: 123.45 });
+    const result = await sellShare({
+      shareAccountId: shareId,
+      brokerageAccountId: brokerageId,
+      quantity: 10,
+      price: 100,
+      fee: 0,
+    });
 
-    const supabase = {
-      auth: {
-        getUser: vi.fn().mockResolvedValue({ data: { user: { id: USER_ID } } }),
-      },
-      from: vi.fn((table: string) => {
-        if (table !== 'accounts') {
-          throw new Error(`Unexpected table: ${table}`);
-        }
-
-        return {
-          select: vi.fn(() => ({
-            eq(key: string, value: unknown) {
-              if (key === 'user_id' && value === USER_ID) {
-                return {
-                  eq(typeKey: string, typeValue: unknown) {
-                    if (typeKey === 'type' && typeValue === AccountType.SHARE) {
-                      return Promise.resolve({ data: shareAccounts, error: null });
-                    }
-                    throw new Error(`Unexpected filter: ${typeKey}=${String(typeValue)}`);
-                  },
-                };
-              }
-              throw new Error(`Unexpected filter: ${key}=${String(value)}`);
-            },
-          })),
-          update: vi.fn(() => ({
-            eq() {
-              return this;
-            },
-          })),
-        };
-      }),
-    };
-
-    mockCreateClient.mockResolvedValue(supabase);
-
-    const result = await refreshSharePrices();
-
-    expect(result.success).toBe(true);
-    expect(mockCreateClient).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ success: false, error: 'Insufficient shares' });
   });
 
-  it('refreshSharePrices continues when one account update fails', async () => {
-    const shareAccounts = [
-      {
-        id: 'share-1',
-        ticker: 'AAPL',
-        shares: 10,
-        last_price_at: null,
-      },
-      {
-        id: 'share-2',
-        ticker: 'MSFT',
-        shares: 5,
-        last_price_at: null,
-      },
-    ];
+  it('refreshSharePrices fetches only accounts not already priced today', async () => {
+    const { shareId } = await seedShareSetup();
+    mockFetchStockPrices.mockResolvedValue({ AAPL: 175 });
 
-    mockFetchStockPrices.mockResolvedValue({ AAPL: 123.45, MSFT: 456.78 });
+    const first = await refreshSharePrices();
+    expect(first).toEqual({ success: true, data: { updated: 1, failed: [], freshSkipped: 0 } });
+    expect(mockFetchStockPrices).toHaveBeenCalledWith(['AAPL'], 'test-finnhub-key');
+    expect((await getAccount(ctx.db, shareId)).last_price).toBe(175);
 
-    const supabase = {
-      auth: {
-        getUser: vi.fn().mockResolvedValue({ data: { user: { id: USER_ID } } }),
-      },
-      from: vi.fn((table: string) => {
-        if (table !== 'accounts') {
-          throw new Error(`Unexpected table: ${table}`);
-        }
+    // Second call the same day: already priced today, nothing to fetch.
+    mockFetchStockPrices.mockClear();
+    const second = await refreshSharePrices();
+    expect(second).toEqual({ success: true, data: { updated: 0, failed: [], freshSkipped: 1 } });
+    expect(mockFetchStockPrices).not.toHaveBeenCalled();
 
-        return {
-          select: vi.fn(() => ({
-            eq(key: string, value: unknown) {
-              if (key === 'user_id' && value === USER_ID) {
-                return {
-                  eq(typeKey: string, typeValue: unknown) {
-                    if (typeKey === 'type' && typeValue === AccountType.SHARE) {
-                      return Promise.resolve({ data: shareAccounts, error: null });
-                    }
-                    throw new Error(`Unexpected filter: ${typeKey}=${String(typeValue)}`);
-                  },
-                };
-              }
-              throw new Error(`Unexpected filter: ${key}=${String(value)}`);
-            },
-          })),
-          update: vi.fn(() => {
-            const filters: Record<string, unknown> = {};
+    // force bypasses the "already priced today" skip.
+    mockFetchStockPrices.mockResolvedValue({ AAPL: 180 });
+    const forced = await refreshSharePrices({ force: true });
+    expect(forced).toEqual({ success: true, data: { updated: 1, failed: [], freshSkipped: 0 } });
+  });
 
-            return {
-              eq(key: string, value: unknown) {
-                filters[key] = value;
-
-                if (key === 'user_id') {
-                  return Promise.resolve({
-                    error:
-                      filters.id === 'share-2'
-                        ? { message: 'Update failed' }
-                        : null,
-                  });
-                }
-
-                return this;
-              },
-            };
-          }),
-        };
-      }),
-    };
-
-    mockCreateClient.mockResolvedValue(supabase);
+  it('refreshSharePrices reports a per-ticker failure without failing the whole batch', async () => {
+    const { brokerageId } = await seedShareSetup();
+    await seedAccount(ctx, {
+      type: 'SHARE',
+      currency: 'USD',
+      brokerage: 'IBKR',
+      ticker: 'MSFT',
+      brokerage_account_id: brokerageId,
+    });
+    mockFetchStockPrices.mockResolvedValue({ AAPL: 175 }); // MSFT missing from the response
 
     const result = await refreshSharePrices();
+    expect(result).toEqual({ success: true, data: { updated: 1, failed: ['MSFT'], freshSkipped: 0 } });
+  });
 
+  it('surfaces a Settings-pointing error when no Finnhub key is configured', async () => {
+    await seedShareSetup();
+    mockGetApiKey.mockResolvedValue(null);
+    mockFetchStockPrices.mockRejectedValue(
+      new Error('No Finnhub API key configured. Add one in Settings to enable price refresh.'),
+    );
+
+    const result = await refreshSharePrices();
     expect(result).toEqual({
-      success: true,
-      data: {
-        updated: 1,
-        failed: ['MSFT'],
-        freshSkipped: 0,
-      },
+      success: false,
+      error: 'No Finnhub API key configured. Add one in Settings to enable price refresh.',
     });
-    expect(mockRevalidatePath).toHaveBeenCalledWith('/accounts/share-1');
-    expect(mockRevalidatePath).toHaveBeenCalledWith('/accounts');
+  });
+
+  it('setSharePrice lets the user override the last fetched price', async () => {
+    const { shareId, brokerageId } = await seedShareSetup();
+    await buyShare({ shareAccountId: shareId, brokerageAccountId: brokerageId, quantity: 10, price: 150, fee: 0 });
+
+    const result = await setSharePrice({ accountId: shareId, price: 142.5 });
+
+    expect(result).toEqual({ success: true, data: { balance: 1425 } });
+    expect(await getAccount(ctx.db, shareId)).toMatchObject({ last_price: 142.5, balance: 1425 });
+  });
+
+  it('setSharePrice rejects a non-share account', async () => {
+    const { brokerageId } = await seedShareSetup();
+    const result = await setSharePrice({ accountId: brokerageId, price: 10 });
+    expect(result).toEqual({ success: false, error: 'Selected account is not a share account' });
   });
 });

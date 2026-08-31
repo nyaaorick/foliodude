@@ -2,8 +2,7 @@
 
 import { useState } from 'react';
 import Decimal from 'decimal.js';
-import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { Link, useNavigate } from 'react-router-dom';
 import { Loader2, Pencil, Trash2 } from 'lucide-react';
 import { setAssetApy } from '@/lib/actions/update-accounts-actions';
 import { AccountType, type AccountWithStats } from '@/lib/types/accounts';
@@ -66,7 +65,7 @@ export function AccountCard({
   onDelete,
   isDeleting = false,
 }: AccountCardProps) {
-  const router = useRouter();
+  const navigate = useNavigate();
   const isLiability = account.type === AccountType.LIABILITY;
   const isAirlineMiles = account.type === AccountType.AIRLINE_MILES;
   const isShare = account.type === AccountType.SHARE;
@@ -98,7 +97,7 @@ export function AccountCard({
   return (
     <div className="flex items-start justify-between gap-4 rounded-[1.4rem] border border-border/80 bg-card/95 p-5 shadow-[0_10px_24px_rgba(48,33,22,0.06)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_16px_30px_rgba(48,33,22,0.09)]">
       <div className="min-w-0 flex-1 space-y-4">
-        <Link href={`/accounts/${account.id}`} className="relative block space-y-3">
+        <Link to={`/accounts/${account.id}`} className="relative block space-y-3">
           <InlineLinkLoading className="absolute right-2 top-2" />
           <div className="flex items-center gap-2">
             <span className="truncate text-base font-medium tracking-tight">{account.name}</span>
@@ -204,7 +203,7 @@ export function AccountCard({
                         apy: nextApy,
                       });
                       setApyDialogOpen(false);
-                      router.refresh();
+                      navigate(0);
                     } catch (caughtError) {
                       if (!(caughtError instanceof Error)) {
                         throw caughtError;

@@ -1,174 +1,48 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const {
-  mockCreateClient,
-  mockRevalidatePath,
-  mockCreateTransaction,
-} = vi.hoisted(() => ({
-  mockCreateClient: vi.fn(),
-  mockRevalidatePath: vi.fn(),
-  mockCreateTransaction: vi.fn(),
-}));
-
-vi.mock('@/lib/supabase/server', () => ({
-  createClient: mockCreateClient,
-}));
-
-vi.mock('next/cache', () => ({
-  revalidatePath: mockRevalidatePath,
-}));
-
-vi.mock('@/lib/actions/createTransaction', () => ({
-  createTransaction: mockCreateTransaction,
-}));
+const { mockGetSessionContext } = vi.hoisted(() => ({ mockGetSessionContext: vi.fn() }));
+vi.mock('@/lib/db/session', () => ({ getSessionContext: mockGetSessionContext }));
 
 import { redeemMileageFlight } from '@/lib/actions/mileage-actions';
-
-const USER_ID = 'user-1';
-const MILEAGE_ACCOUNT_ID = '11111111-1111-4111-8111-111111111111';
-const TAX_ACCOUNT_ID = '22222222-2222-4222-8222-222222222222';
-
-function createSupabaseMock(mileageBalance = 20000, taxAccountType = 'LIABILITY') {
-  const insertedTransactions: Array<Record<string, unknown>> = [];
-  const accountUpdates: Array<Record<string, unknown>> = [];
-
-  const accountsTable = {
-    select: vi.fn((columns: string) => ({
-      eq() {
-        return this;
-      },
-      single: vi.fn().mockImplementation(() => {
-        if (columns.includes('balance')) {
-          return Promise.resolve({
-            data: {
-              id: MILEAGE_ACCOUNT_ID,
-              type: 'AIRLINE_MILES',
-              balance: mileageBalance,
-            },
-            error: null,
-          });
-        }
-
-        return Promise.resolve({
-          data: {
-            id: TAX_ACCOUNT_ID,
-            name: 'Amex Gold',
-            type: taxAccountType,
-            currency: 'USD',
-          },
-          error: null,
-        });
-      }),
-    })),
-    update: vi.fn((payload: Record<string, unknown>) => {
-      accountUpdates.push(payload);
-      return {
-        eq() {
-          return this;
-        },
-        then(resolve: (value: { error: null }) => unknown) {
-          return Promise.resolve(resolve({ error: null }));
-        },
-      };
-    }),
-  };
-
-  const transactionsTable = {
-    insert: vi.fn((payload: Record<string, unknown>) => {
-      insertedTransactions.push(payload);
-      return {
-        select() {
-          return this;
-        },
-        single() {
-          return Promise.resolve({
-            data: { id: 'mileage-redeem-1', ...payload },
-            error: null,
-          });
-        },
-      };
-    }),
-  };
-
-  return {
-    insertedTransactions,
-    accountUpdates,
-    supabase: {
-      auth: {
-        getUser: vi.fn().mockResolvedValue({
-          data: { user: { id: USER_ID } },
-        }),
-      },
-      from: vi.fn((table: string) => {
-        if (table === 'accounts') return accountsTable;
-        if (table === 'transactions') return transactionsTable;
-        throw new Error(`Unexpected table: ${table}`);
-      }),
-    },
-  };
-}
+import { createTestContext, getAccount, seedAccount } from '@/lib/db/testing';
+import type { SessionContext } from '@/lib/db/session';
 
 describe('redeemMileageFlight', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockCreateTransaction.mockResolvedValue({
-      expense_id: 'expense-1',
-      reward_id: null,
-      reward_points: 0,
-    });
+  let ctx: SessionContext;
+
+  beforeEach(async () => {
+    ctx = await createTestContext();
+    mockGetSessionContext.mockResolvedValue(ctx);
   });
 
-  it('creates a flight redemption plus linked tax expense', async () => {
-    const { insertedTransactions, accountUpdates, supabase } = createSupabaseMock();
-    mockCreateClient.mockResolvedValue(supabase);
+  it('redeems miles and logs the taxes as a linked expense atomically', async () => {
+    const mileageId = await seedAccount(ctx, {
+      type: 'AIRLINE_MILES', currency: 'USD', airline_program: 'KRISFLYER', balance: 50000,
+    });
+    const card = await seedAccount(ctx, { type: 'LIABILITY', currency: 'USD' });
 
     const result = await redeemMileageFlight({
-      mileageAccountId: MILEAGE_ACCOUNT_ID,
-      ticketName: 'Tokyo round trip 2026-03',
-      miles: 10000,
-      taxAccountId: TAX_ACCOUNT_ID,
-      taxAmount: 123.45,
-      taxCurrency: 'USD',
-      date: '2026-03-16T00:00:00.000Z',
+      mileageAccountId: mileageId, ticketName: 'SFO-NRT', miles: 30000,
+      taxAccountId: card, taxAmount: 45.5, taxCurrency: 'USD', date: '2026-03-16',
     });
 
     expect(result.success).toBe(true);
-    expect(mockCreateTransaction).toHaveBeenCalledWith({
-      accountId: TAX_ACCOUNT_ID,
-      category: 'Travel',
-      amount: 123.45,
-      memo: 'Tokyo round trip 2026-03',
-      date: '2026-03-16T00:00:00.000Z',
-    });
-    expect(insertedTransactions[0]).toMatchObject({
-      type: 'MILEAGE_REDEEM_FLIGHT',
-      amount: 10000,
-      from_account: MILEAGE_ACCOUNT_ID,
-      metadata: {
-        ticket_name: 'Tokyo round trip 2026-03',
-        tax_expense_transaction_id: 'expense-1',
-      },
-    });
-    expect(accountUpdates[0]).toEqual({ balance: 10000 });
+    if (!result.success) throw new Error('unreachable');
+    expect(result.data.mileageTransaction).toMatchObject({ type: 'MILEAGE_REDEEM_FLIGHT', amount: 30000 });
+    expect((await getAccount(ctx.db, mileageId)).balance).toBe(20000);
   });
 
-  it('rejects non-liability tax accounts', async () => {
-    const { supabase } = createSupabaseMock(20000, 'ASSET');
-    mockCreateClient.mockResolvedValue(supabase);
+  it('rejects a tax account that is not a liability', async () => {
+    const mileageId = await seedAccount(ctx, {
+      type: 'AIRLINE_MILES', currency: 'USD', airline_program: 'KRISFLYER', balance: 50000,
+    });
+    const cash = await seedAccount(ctx, { type: 'ASSET', currency: 'USD' });
 
     const result = await redeemMileageFlight({
-      mileageAccountId: MILEAGE_ACCOUNT_ID,
-      ticketName: 'Tokyo round trip 2026-03',
-      miles: 10000,
-      taxAccountId: TAX_ACCOUNT_ID,
-      taxAmount: 123.45,
-      taxCurrency: 'USD',
-      date: '2026-03-16T00:00:00.000Z',
+      mileageAccountId: mileageId, ticketName: 'SFO-NRT', miles: 30000,
+      taxAccountId: cash, taxAmount: 45.5, taxCurrency: 'USD', date: '2026-03-16',
     });
 
-    expect(result).toEqual({
-      success: false,
-      error: 'Tax payment account must be a liability account',
-    });
+    expect(result).toEqual({ success: false, error: 'Tax payment account must be a liability account' });
   });
 });

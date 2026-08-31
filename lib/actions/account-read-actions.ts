@@ -1,9 +1,5 @@
-'use server';
-
-import {
-  requireSessionContext,
-  type RequestSessionContext,
-} from '@/lib/supabase/server';
+import { getSessionContext } from '@/lib/db/session';
+import { one, rows } from '@/lib/db/sql';
 import {
   AccountType,
   type AccountOption,
@@ -32,6 +28,12 @@ const ACCOUNT_TYPE_ORDER: Record<AccountType, number> = {
   [AccountType.AIRLINE_MILES]: 2,
   [AccountType.SHARE]: 3,
 };
+
+/**
+ * A memo carrying this marker is excluded from `loadAccountTransactions`.
+ * `createByIntent` uses it to log a transaction's raw intent text without that
+ * text appearing as the visible memo in the account's ledger view.
+ */
 const HIDDEN_MARKER = '[HIDDEN]';
 
 type AccountOptionRow = Pick<
@@ -98,7 +100,7 @@ function mapTransaction(row: TransactionRow): Transaction {
     share_quantity: row.share_quantity,
     share_price: row.share_price,
     fee: row.fee,
-    transaction_at: row.transaction_at,
+    transaction_date: row.transaction_date,
     created_at: row.created_at,
   };
 }
@@ -107,101 +109,82 @@ function sortAccounts<T extends { type: AccountType }>(accounts: T[]): T[] {
   return accounts.sort((a, b) => ACCOUNT_TYPE_ORDER[a.type] - ACCOUNT_TYPE_ORDER[b.type]);
 }
 
-export async function getAccounts(
-  context: RequestSessionContext,
-): Promise<AccountWithStats[]> {
-  const { data, error } = await context.supabase
-    .from('accounts')
-    .select('*')
-    .eq('user_id', context.userId);
-
-  if (error) {
-    throw new Error(error.message);
-  }
-
-  return sortAccounts(((data ?? []) as AccountRow[]).map(mapAccount));
+export async function getAccounts(): Promise<AccountWithStats[]> {
+  const { db, userId } = await getSessionContext();
+  const accountRows = await rows<AccountRow>(
+    db,
+    'SELECT * FROM accounts WHERE user_id = $1',
+    [userId],
+  );
+  return sortAccounts(accountRows.map(mapAccount));
 }
 
 export async function getAccountById(id: string): Promise<AccountWithStats> {
-  const context = await requireSessionContext();
-
-  const { data, error } = await context.supabase
-    .from('accounts')
-    .select('*')
-    .eq('id', id)
-    .eq('user_id', context.userId)
-    .single();
-
-  if (error || !data) {
-    throw new Error(error?.message ?? 'Account not found');
-  }
-
-  return mapAccount(data as AccountRow);
+  const { db, userId } = await getSessionContext();
+  const row = await one<AccountRow>(
+    db,
+    'SELECT * FROM accounts WHERE id = $1 AND user_id = $2',
+    [id, userId],
+    'Account not found',
+  );
+  return mapAccount(row);
 }
 
-export async function loadAccountDetailCore(
-  context: RequestSessionContext,
-  accountId: string,
-): Promise<AccountWithStats | null> {
-  const { data, error } = await context.supabase
-    .from('accounts')
-    .select('*')
-    .eq('user_id', context.userId)
-    .eq('id', accountId)
-    .single();
-
-  if (error || !data) {
-    return null;
-  }
-
-  return mapAccount(data as AccountRow);
+/** Same lookup as `getAccountById`, but `null` on a miss instead of throwing. */
+export async function loadAccountDetailCore(accountId: string): Promise<AccountWithStats | null> {
+  const { db, userId } = await getSessionContext();
+  const result = await db.query<AccountRow>(
+    'SELECT * FROM accounts WHERE user_id = $1 AND id = $2',
+    [userId, accountId],
+  );
+  return result.rows[0] ? mapAccount(result.rows[0]) : null;
 }
 
-export async function loadAccountDetailSupport(
-  context: RequestSessionContext,
-): Promise<AccountDetailSupportData> {
-  const [accountsResult, rewardRatesResult] = await Promise.all([
-    context.supabase
-      .from('accounts')
-      .select(
-        'id, name, type, balance, currency, reward_currency, reward_balance, airline_program, brokerage_account_id',
-      )
-      .eq('user_id', context.userId),
-    context.supabase
-      .from('reward_rates')
-      .select('user_id, reward_currency, usd_per_10k_points, updated_at')
-      .eq('user_id', context.userId),
+export async function loadAccountDetailSupport(): Promise<AccountDetailSupportData> {
+  const { db, userId } = await getSessionContext();
+
+  const [accountRows, rewardRateRows] = await Promise.all([
+    rows<AccountOptionRow>(
+      db,
+      `SELECT id, name, type, balance, currency, reward_currency, reward_balance,
+              airline_program, brokerage_account_id
+         FROM accounts WHERE user_id = $1`,
+      [userId],
+    ),
+    rows<RewardRateRow>(
+      db,
+      'SELECT user_id, reward_currency, usd_per_10k_points, updated_at FROM reward_rates WHERE user_id = $1',
+      [userId],
+    ),
   ]);
 
-  const accounts = accountsResult.error
-    ? []
-    : sortAccounts(((accountsResult.data ?? []) as AccountOptionRow[]).map(mapAccountOption));
-
-  const rewardRates = rewardRatesResult.error
-    ? getDefaultRewardRateMap()
-    : buildRewardRateMap(rewardRatesResult.data as RewardRateRow[] | null);
-
-  return { accounts, rewardRates };
+  return {
+    accounts: sortAccounts(accountRows.map(mapAccountOption)),
+    rewardRates: rewardRateRows.length > 0
+      ? buildRewardRateMap(rewardRateRows)
+      : getDefaultRewardRateMap(),
+  };
 }
 
-export async function loadAccountTransactions(
-  context: RequestSessionContext,
-  accountId: string,
-): Promise<TransactionWithReward[]> {
-  const { data, error } = await context.supabase
-    .from('transactions')
-    .select('*')
-    .eq('user_id', context.userId)
-    .or(
-      `and(from_account.eq.${accountId},memo.is.null),and(to_account.eq.${accountId},memo.is.null),and(from_account.eq.${accountId},memo.not.ilike.*${HIDDEN_MARKER}*),and(to_account.eq.${accountId},memo.not.ilike.*${HIDDEN_MARKER}*)`,
-    )
-    .order('transaction_at', { ascending: false });
+/**
+ * An account's ledger, newest first, with each row's reward/mileage origin
+ * transaction attached for display (e.g. "earned from" a specific expense).
+ * Rows whose memo carries `HIDDEN_MARKER` are omitted — see the constant above.
+ */
+export async function loadAccountTransactions(accountId: string): Promise<TransactionWithReward[]> {
+  const { db, userId } = await getSessionContext();
 
-  if (error) {
-    return [];
-  }
+  const transactionRows = await rows<TransactionRow>(
+    db,
+    `SELECT * FROM transactions
+      WHERE user_id = $1
+        AND (from_account = $2 OR to_account = $2)
+        AND (memo IS NULL OR memo NOT ILIKE '%' || $3 || '%')
+      ORDER BY transaction_date DESC, seq DESC`,
+    [userId, accountId, HIDDEN_MARKER],
+  );
 
-  const transactions = ((data ?? []) as TransactionRow[]).map(mapTransaction);
+  const transactions = transactionRows.map(mapTransaction);
   const referenceIds = [
     ...new Set(
       transactions
@@ -213,27 +196,25 @@ export async function loadAccountTransactions(
   let referenceLookup = new Map<string, LinkedTransactionSummary>();
 
   if (referenceIds.length > 0) {
-    const { data: referenceRows, error: referenceError } = await context.supabase
-      .from('transactions')
-      .select('id, type, from_account, to_account')
-      .eq('user_id', context.userId)
-      .in('id', referenceIds);
+    const referenceRows = await rows<
+      Pick<TransactionRow, 'id' | 'type' | 'from_account' | 'to_account'>
+    >(
+      db,
+      'SELECT id, type, from_account, to_account FROM transactions WHERE user_id = $1 AND id = ANY($2)',
+      [userId, referenceIds],
+    );
 
-    if (!referenceError) {
-      referenceLookup = new Map(
-        ((referenceRows ?? []) as Array<
-          Pick<TransactionRow, 'id' | 'type' | 'from_account' | 'to_account'>
-        >).map((transaction) => [
-          transaction.id,
-          {
-            id: transaction.id,
-            type: transaction.type as TransactionType,
-            from_account: transaction.from_account,
-            to_account: transaction.to_account,
-          },
-        ]),
-      );
-    }
+    referenceLookup = new Map(
+      referenceRows.map((transaction) => [
+        transaction.id,
+        {
+          id: transaction.id,
+          type: transaction.type as TransactionType,
+          from_account: transaction.from_account,
+          to_account: transaction.to_account,
+        },
+      ]),
+    );
   }
 
   return transactions.map((transaction) => ({

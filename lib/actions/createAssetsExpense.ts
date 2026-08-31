@@ -1,9 +1,8 @@
-'use server';
-
 import { z } from 'zod';
 import Decimal from 'decimal.js';
-import { revalidatePath } from 'next/cache';
-import { requireSessionContext } from '@/lib/supabase/server';
+import { getSessionContext } from '@/lib/db/session';
+import { insertTransaction, loadAccount, normalizeMemo, updateAccount } from '@/lib/db/ledger';
+
 import { AccountType } from '@/lib/types/accounts';
 import { TransactionType } from '@/lib/types/transactions';
 import { normalizeMoneyAmount } from '@/lib/utils/financial-analytics';
@@ -12,7 +11,7 @@ const CreateAssetsExpenseSchema = z.object({
   accountId: z.string().uuid(),
   amount: z.number().finite().gt(0, 'Amount must be greater than 0'),
   memo: z.string().optional(),
-  date: z.string().datetime(),
+  date: z.string().date(),
 });
 
 type CreateAssetsExpenseInput = z.infer<typeof CreateAssetsExpenseSchema>;
@@ -29,78 +28,46 @@ interface AssetAccountRow {
   type: AccountType;
 }
 
+/** Spend from a plain asset account. No rewards are earned; see createTransaction. */
 export async function createAssetsExpense(
   input: CreateAssetsExpenseInput,
 ): Promise<CreateAssetsExpenseResult> {
-  const { supabase, userId } = await requireSessionContext();
+  const { db, userId } = await getSessionContext();
 
   const parsed = CreateAssetsExpenseSchema.safeParse(input);
   if (!parsed.success) {
-    throw new Error(parsed.error.issues[0].message);
+    throw new Error(parsed.error.issues[0]?.message ?? 'Invalid expense input');
   }
 
   const { accountId, amount: rawAmount, memo, date } = parsed.data;
   const amount = normalizeMoneyAmount(rawAmount);
 
-  const { data: accountRow, error: accountError } = await supabase
-    .from('accounts')
-    .select('balance, currency, type')
-    .eq('id', accountId)
-    .eq('user_id', userId)
-    .single();
+  return db.transaction(async (tx) => {
+    const account = await loadAccount<AssetAccountRow>(
+      tx,
+      userId,
+      accountId,
+      'balance, currency, type',
+    );
 
-  if (accountError || !accountRow) {
-    throw new Error(accountError?.message ?? 'Account not found');
-  }
+    if (account.type !== AccountType.ASSET) {
+      throw new Error('Account must be an asset account');
+    }
 
-  const account = accountRow as AssetAccountRow;
-
-  if (account.type !== AccountType.ASSET) {
-    throw new Error('Account must be an asset account');
-  }
-
-  const normalizedMemo = memo?.trim() ? memo.trim() : null;
-  const nextBalance = new Decimal(account.balance).minus(amount).toNumber();
-
-  const { data: expenseRow, error: expenseError } = await supabase
-    .from('transactions')
-    .insert({
-      user_id: userId,
+    const expenseId = await insertTransaction(tx, userId, {
       type: TransactionType.EXPENSE,
       amount,
       currency: account.currency,
-      reward_currency: null,
-      metadata: {},
-      reference_transaction_id: null,
       from_account: accountId,
-      to_account: null,
       category: 'Other',
-      memo: normalizedMemo,
-      transaction_at: date,
-    })
-    .select('id')
-    .single();
+      memo: normalizeMemo(memo),
+      transaction_date: date,
+    });
 
-  if (expenseError || !expenseRow) {
-    throw new Error(expenseError?.message ?? 'Failed to create asset expense transaction');
-  }
+    await updateAccount(tx, userId, accountId, {
+      balance: new Decimal(account.balance).minus(amount).toNumber(),
+    });
 
-  const { error: balanceError } = await supabase
-    .from('accounts')
-    .update({ balance: nextBalance })
-    .eq('id', accountId)
-    .eq('user_id', userId);
-
-  if (balanceError) {
-    throw new Error(balanceError.message);
-  }
-
-  revalidatePath('/accounts');
-  revalidatePath(`/accounts/${accountId}`);
-
-  return {
-    expense_id: expenseRow.id,
-    reward_id: null,
-    reward_points: 0,
-  };
+    return { expense_id: expenseId, reward_id: null, reward_points: 0 };
+  });
 }

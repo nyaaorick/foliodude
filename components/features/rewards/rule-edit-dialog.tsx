@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useNavigate } from 'react-router-dom';
 import { Pencil } from 'lucide-react';
 import { updateRewardRule } from '@/lib/actions/reward-actions';
 import type {
@@ -55,7 +55,7 @@ export function RewardRuleInlineRow({
   rewardCurrency,
   rule: initialRule,
 }: RewardRuleInlineRowProps) {
-  const router = useRouter();
+  const navigate = useNavigate();
   const [rule, setRule] = useState(initialRule);
   const [editingField, setEditingField] = useState<EditingField>(null);
   const [savingField, setSavingField] = useState<EditingField>(null);
@@ -129,7 +129,7 @@ export function RewardRuleInlineRow({
       setDraftCapPeriod(nextRule.cap_period ?? 'annual');
       setDraftBasicRate(String(nextRule.fallback_rate ?? 1));
       setEditingField(null);
-      router.refresh();
+      navigate(0);
     } catch (caughtError) {
       if (!(caughtError instanceof Error)) {
         throw caughtError;

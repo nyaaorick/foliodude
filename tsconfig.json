@@ -1,34 +1,34 @@
 {
+  "extends": "./.wxt/tsconfig.json",
   "compilerOptions": {
-    "target": "ES2017",
-    "lib": ["dom", "dom.iterable", "esnext"],
-    "allowJs": true,
-    "skipLibCheck": true,
-    "strict": true,
-    "noEmit": true,
-    "esModuleInterop": true,
-    "module": "esnext",
-    "moduleResolution": "bundler",
-    "resolveJsonModule": true,
-    "isolatedModules": true,
     "jsx": "react-jsx",
-    "incremental": true,
-    "plugins": [
-      {
-        "name": "next"
-      }
-    ],
+    "strict": true,
     "paths": {
       "@/*": ["./*"]
     }
   },
-  "include": [
-    "next-env.d.ts",
-    "**/*.ts",
-    "**/*.tsx",
-    ".next/types/**/*.ts",
-    ".next/dev/types/**/*.ts",
-    "**/*.mts"
-  ],
-  "exclude": ["node_modules"]
+  "include": [".wxt/wxt.d.ts", "**/*.ts", "**/*.tsx", "**/*.mts"],
+  // Migration quarantine. Everything below is Next.js-era code that still
+  // imports `next/*` or the removed `@/lib/supabase/server`, so it cannot
+  // typecheck and is not reachable from any build entrypoint. `lib/actions/*`
+  // (Phase 2) is fully migrated and no longer needs an entry here — what's
+  // left is Phase 3's job. Delete each line as its phase lands; when the list
+  // is empty, delete the list.
+  "exclude": [
+    "node_modules",
+    ".output",
+
+    // Phase 3 — legacy Next.js App Router routes, superseded by `pages/`.
+    // Kept as reference for what Phase 3's pages/*.tsx should reproduce —
+    // doesn't build or ship, see README.md.
+    "app",
+
+    // Phase 3 — feature UI still calling `lib/actions` with the pre-migration
+    // calling convention (context params, ActionResult shapes that changed
+    // during the native port). Needs rewiring, not just a typecheck pass.
+    "components/features/accounts",
+    "components/features/transactions",
+    "components/features/rewards",
+    "components/features/navigation/loading-ui.tsx"
+  ]
 }

@@ -1,20 +1,14 @@
-'use client';
-
-import dynamic from 'next/dynamic';
-import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { lazy, Suspense } from 'react';
+import { Link, useLocation } from 'react-router-dom';
 import type { LucideIcon } from 'lucide-react';
 import { FlaskConical, LayoutGrid, LogOut, Mail, WalletCards } from 'lucide-react';
-import { InlineLinkLoading } from '@/components/features/navigation/loading-ui';
-import { signOut } from '@/lib/actions/auth-actions';
+import { isAuthEnabled, signOut } from '@/lib/auth';
 import { cn } from '@/lib/utils';
 
-const NoticeDialog = dynamic(
-  () =>
-    import('@/components/features/notice/notice-dialog').then(
-      (module) => module.NoticeDialog,
-    ),
-  { ssr: false },
+const NoticeDialog = lazy(() =>
+  import('@/components/features/notice/notice-dialog').then(
+    (module) => ({ default: module.NoticeDialog }),
+  ),
 );
 
 interface NavItem {
@@ -50,10 +44,6 @@ const BASE_NAV_ITEMS: NavItem[] = [
     match: 'exact',
   },
 ];
-
-function getNavItems(): NavItem[] {
-  return BASE_NAV_ITEMS;
-}
 
 function AuthNavItem({
   mobile = false,
@@ -92,18 +82,16 @@ function NavLinks({
   pathname: string;
   mobile?: boolean;
 }) {
-  const items = getNavItems();
-
   return (
     <>
-      {items.map((item) => {
+      {BASE_NAV_ITEMS.map((item) => {
         const active = isActive(pathname, item);
         const Icon = item.icon;
 
         return (
           <Link
             key={item.href}
-            href={item.href}
+            to={item.href}
             aria-current={active ? 'page' : undefined}
             className={cn(
               'group flex items-center gap-2 rounded-[1.1rem] border border-transparent text-sm tracking-tight text-muted-foreground transition-colors duration-200',
@@ -111,10 +99,8 @@ function NavLinks({
                 ? 'border-sidebar-border/80 bg-sidebar-accent text-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]'
                 : 'hover:bg-sidebar-accent/70 hover:text-foreground',
               mobile ? 'min-w-fit px-3 py-2' : 'px-3 py-2.5',
-              'relative',
             )}
           >
-            <InlineLinkLoading className="absolute right-3 top-1/2 -translate-y-1/2" />
             <Icon className={cn('shrink-0', mobile ? 'size-3.5' : 'size-4')} />
             <span className={cn(mobile ? 'text-[0.82rem]' : 'text-[0.92rem]')}>
               {item.label}
@@ -122,7 +108,7 @@ function NavLinks({
           </Link>
         );
       })}
-      <AuthNavItem mobile={mobile} />
+      {isAuthEnabled && <AuthNavItem mobile={mobile} />}
     </>
   );
 }
@@ -132,23 +118,23 @@ export function AppShell({
 }: {
   children: React.ReactNode;
 }) {
-  const pathname = usePathname();
+  const { pathname } = useLocation();
 
-  if (pathname === '/') {
+  if (pathname === '/login') {
     return <>{children}</>;
   }
 
-  const showNotice = pathname !== '/login';
-
   return (
     <div className="min-h-screen">
-      {showNotice ? <NoticeDialog /> : null}
+      <Suspense fallback={null}>
+        <NoticeDialog />
+      </Suspense>
 
       <aside className="fixed inset-y-6 left-6 z-30 hidden w-40 flex-col rounded-[1.9rem] border border-sidebar-border/80 bg-sidebar/88 p-3 shadow-[0_18px_45px_rgba(48,33,22,0.08)] backdrop-blur md:flex">
         <div className="space-y-6">
           <div className="flex items-center justify-center rounded-[1.45rem] border border-sidebar-border/70 bg-background/60 px-3 py-3 text-center">
             <p className="text-base leading-none font-medium tracking-tight [font-family:var(--font-display)]">
-              FolioDude.it.com
+              FolioDude
             </p>
           </div>
           <nav className="space-y-1.5">
@@ -164,7 +150,7 @@ export function AppShell({
         <div className="rounded-[1.7rem] border border-sidebar-border/80 bg-sidebar/92 p-2 shadow-[0_14px_36px_rgba(48,33,22,0.08)] backdrop-blur">
           <div className="mb-2 flex items-center justify-between px-2 pt-1">
             <p className="text-xs font-medium tracking-tight text-muted-foreground">
-              FolioDude.it.com
+              FolioDude
             </p>
           </div>
           <nav className="flex gap-1 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">

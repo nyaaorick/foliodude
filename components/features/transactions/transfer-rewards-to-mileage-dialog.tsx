@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useNavigate } from 'react-router-dom';
 import { ArrowRightLeft, Plus, Trash2 } from 'lucide-react';
 import { transferRewardsToMileageAccount } from '@/lib/actions/mileage-actions';
 import { AccountType, type AccountOption } from '@/lib/types/accounts';
@@ -75,7 +75,7 @@ export function TransferRewardsToMileageDialog({
   fixedMileageAccountId,
   fixedSourceAccountId,
 }: TransferRewardsToMileageDialogProps) {
-  const router = useRouter();
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [mileageAccountId, setMileageAccountId] = useState(fixedMileageAccountId ?? '');
   const [sources, setSources] = useState<SourceDraft[]>(
@@ -186,7 +186,7 @@ export function TransferRewardsToMileageDialog({
 
     setOpen(false);
     resetState();
-    router.refresh();
+    navigate(0);
   };
 
   const title = fixedMileageAccountId
