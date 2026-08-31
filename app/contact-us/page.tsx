@@ -18,7 +18,7 @@ export default function ContactUsPage() {
           </p>
           <p>
             <a
-              href="https://github.com/nyaaorick/finproject"
+              href="https://github.com/nyaaorick/foliodude"
               className="font-medium text-foreground underline-offset-4 hover:underline"
               target="_blank"
               rel="noreferrer"

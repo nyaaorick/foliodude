@@ -1,106 +1,104 @@
-# FinProject
+# FolioDude
 
-Single-user finance dashboard built with:
+**A local-first personal finance tracker for people whose money is spread
+across countries, currencies, stocks, airline miles, and credit card
+rewards.** No server, no account required, no data leaves your device unless
+you turn on sync yourself.
 
-- Next.js App Router
-- TypeScript
-- Supabase
-- shadcn/ui + Tailwind
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## Local Development
+## Why
 
-Run the app:
+Most finance apps assume one bank, one currency, one country. FolioDude
+doesn't: it tracks cash and investment accounts, airline mileage programs, and
+credit card reward points side by side, and rolls them into one net-worth view
+in USD. Everything runs as a real WASM Postgres database
+(`@electric-sql/pglite`) inside your browser or browser extension — your
+transaction history is queried locally with zero network latency, and it's
+still there offline.
 
-```bash
-npm run dev
-```
+- **Nothing is sent anywhere by default.** The app ships with no API keys of
+  any kind; optional integrations (live FX rates, share prices, AI-assisted
+  entry) only activate if you supply your own key in Settings.
+- **Two native-feeling surfaces from one codebase**: a Firefox sidebar for
+  desktop, a standalone PWA you add to your iPhone home screen for mobile.
+- **Multi-currency, multi-account by design** — assets, liabilities, airline
+  miles, and brokerage positions are first-class account types, not bolted on.
 
-Useful checks:
+See [PLAN.md](PLAN.md) for the full architecture, the migration plan off the
+original Next.js/Supabase stack, and the reasoning behind each design
+decision.
 
-```bash
-npm test
-npx tsc --noEmit
-```
+## Build targets
 
-## No-Nonsense / Fail-Fast Developer Prompt
+Two build targets share one React codebase:
 
-- **Role:** Act as a Senior Software Architect specializing in Clean Code and the Fail-Fast principle.
-- **Core Instruction:** Optimize code by stripping away all "defensive programming" garbage. Do not provide "safety nets" that swallow errors or waste tokens.
-- **Strict Requirements:**
-  - **No Silent Failures:** Never use empty catch blocks or return vague values like null, undefined, or {} just to prevent a crash. If something is wrong, let it throw an error.
-  - **Eliminate "Garbage" Logic:** Remove redundant null checks or `if (data)` wrappers if the logic logically requires that data to exist. Expose exactly where the chain breaks.
-  - **Precision over Robustness:** Prefer a "brittle" but honest script over a "robust" but lying one. The code should be a "surgical strike"—minimalist, readable, and direct.
-  - **Expose the Root Cause:** If an API call fails or a configuration is missing, the error must be loud and clear in the console immediately.
-- **Goal:** Transform "defensive/messy" code into a "naked/high-performance" implementation. If you see a potential issue, report it as a bug rather than coding around it.
+| Target | Form factor | Entry | Output |
+| :-- | :-- | :-- | :-- |
+| Firefox Desktop | Sidebar WebExtension (MV3) | `entrypoints/` | `.output/firefox-mv3/` |
+| iOS Safari | Standalone PWA | `pwa/` | `.output/pwa/` |
 
-## App Container (All-in-One, Cloudflare Origin TLS)
-
-- Single env workflow:
-  - `.env.local` for local dev.
-  - Copy to `.env` for build/runtime: `cp .env.local .env`
-  - Both public and private vars live in that one file.
-- Build (no args needed):
-  ```bash
-  docker --context default buildx build --platform linux/amd64 -t next-app:latest --load .
-  ```
-- Upload to VPS:
-  ```bash
-  docker --context default save next-app:latest | gzip > /tmp/next-app-amd64.tar.gz
-  scp /tmp/next-app-amd64.tar.gz root@<server-ip>:/opt/finproject/
-  ```
-- Run on VPS (only Docker, no host Nginx/Certbot):
-  ```bash
-  cd /opt/finproject
-  gunzip -c next-app-amd64.tar.gz | docker load
-  docker rm -f folio-frontend || true
-  docker run -d \
-    --name folio-frontend \
-    -p 80:80 \
-    -p 443:443 \
-    --restart always \
-    next-app:latest
-  ```
-- Inside the image:
-  - Nginx fronts the app and proxies to Next.js on 3000.
-  - Header buffers are increased: `client_header_buffer_size 32k;` and `large_client_header_buffers 8 64k;`.
-  - Port 80 redirects to HTTPS.
-  - Port 443 uses a baked-in Cloudflare Origin Certificate and private key.
-  - The baked-in `.env` is used for both build and runtime; no `--build-arg` or `--env-file`.
-- Cloudflare setup:
-  - Proxy (orange cloud) enabled for the domain.
-  - SSL mode set to **Full (strict)**.
-  - No `certbot` is required because the image already contains the Cloudflare Origin Certificate.
-
-## Required Environment Variables
-
-Set these in `.env` / `.env.local`:
-
-- `NEXT_PUBLIC_SITE_URL`
-- `NEXT_PUBLIC_SUPABASE_URL`
-- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-- `SUPABASE_SERVICE_ROLE_KEY`
-- `CRON_SECRET`
-- `GOOGLE_CLIENT_ID`
-- `GOOGLE_CLIENT_SECRET`
-- `EXCHANGE_RATE_API_KEY`
-- `FINNHUB_API_KEY`
-
-## VPS Preparation
-
-Debian 12 bootstrap scripts live in `ops/vps/`:
-
-- `install-system.sh` installs Docker only.
-- `install-app-cron.sh` installs the daily snapshot cron job
-- `nginx/finproject.conf.example` is kept for reference but is not used by the all-in-one container
-
-## Cron Security
-
-`/api/cron/net-worth-snapshots` now supports a `CRON_SECRET`. In production, call it with one of:
+## Getting started
 
 ```bash
-curl -H "Authorization: Bearer $CRON_SECRET" https://foliodude.it.com/api/cron/net-worth-snapshots
+npm install
+
+npm run dev:firefox    # launches Firefox with the sidebar loaded (primary workflow)
+npm run dev:pwa        # vite dev server on :5174, host-exposed for testing on a real iPhone
+npm run build:firefox  # -> .output/firefox-mv3
+npm run build:pwa      # -> .output/pwa
+npm run build          # both
+npm run zip:firefox    # signable .xpi
+
+npm run compile        # tsc --noEmit
+npm test               # vitest
 ```
 
-```bash
-curl -H "x-cron-secret: $CRON_SECRET" https://foliodude.it.com/api/cron/net-worth-snapshots
+Open the sidebar in Firefox with `Ctrl/Cmd+B`, or View → Sidebar → FolioDude.
+For iOS, serve `.output/pwa` over HTTPS/LAN and use Share → Add to Home Screen.
+
+Optional API keys (FX rates, share prices, AI-assisted entry) are entered by
+the user in Settings and stored only in the local database — see PLAN.md §1
+and §7. Nothing needs to be configured to run the app.
+
+## Layout
+
 ```
+entrypoints/       WXT extension entrypoints (background, sidepanel)
+pwa/               PWA shell: index.html, main.tsx, manifest + icons
+components/app/    AppRoot — the router shell both targets mount
+components/        ui/ (primitives) and features/ (domain UI)
+pages/             route components
+lib/db/            PGlite client, migrations, session, ledger + settings helpers
+lib/actions/       business logic — direct PGlite queries, no server
+lib/               types, utils, data, auth
+assets/globals.css single Tailwind entry, shared by both targets
+```
+
+## Project status
+
+Phase 1 (build tooling) and Phase 2 (local database layer) are done: every
+file in `lib/actions/` runs directly against PGlite inside a transaction, with
+181 tests passing against a real in-memory database (not a mocked query
+builder). `npm run compile` is clean across the whole project.
+
+**Phase 3 (UI wiring) hasn't started** — the backend is fully functional and
+tested, but `pages/*.tsx` don't call it yet, so the app still shows Phase-2
+placeholder text ("will be available after PGLite integration") rather than
+real data. `app/` holds the pre-migration Next.js pages as a reference for
+what Phase 3 should reproduce; it doesn't build or ship. `components/features/*`
+still call the pre-migration server-action API shape and are excluded from
+typecheck until Phase 3 rewires them — see the annotated `exclude` block in
+[tsconfig.json](tsconfig.json).
+
+Full roadmap, open risks, and design rationale for each phase live in
+[PLAN.md](PLAN.md).
+
+## Community
+
+Bugs and feature ideas: open a [GitHub issue](https://github.com/nyaaorick/foliodude/issues).
+Questions or just want to chat: [Discord](https://discord.gg/BqC4JzwT).
+
+## License
+
+[MIT](LICENSE) © 2026 nyaaorick
