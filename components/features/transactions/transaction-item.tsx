@@ -1,6 +1,7 @@
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { useState } from 'react';
 import { EyeOff } from 'lucide-react';
+import { revalidate } from '@/lib/data/store';
 import { deleteAction } from '@/lib/actions/delete-actions';
 import { AccountType } from '@/lib/types/accounts';
 import { getRewardCurrencyDefinition } from '@/lib/types/rewards';
@@ -8,7 +9,6 @@ import { TransactionType, type TransactionWithReward } from '@/lib/types/transac
 import { canDeleteTransactionType } from '@/lib/utils/delete-support';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { InlineLinkLoading } from '@/components/features/navigation/loading-ui';
 import {
   getTransactionAmountLabel,
   getTransactionDisplay,
@@ -183,7 +183,6 @@ export function TransactionItem({
   accountType,
   currency,
 }: TransactionItemProps) {
-  const navigate = useNavigate();
   const [submitting, setSubmitting] = useState(false);
   const [isHidden, setIsHidden] = useState(false);
   const [error, setError] = useState('');
@@ -254,9 +253,8 @@ export function TransactionItem({
   const mainContent = linkedTargetAccountId ? (
     <Link
       to={`/accounts/${linkedTargetAccountId}`}
-      className="relative block min-w-0 flex-1 rounded-lg transition-colors hover:bg-muted/20"
+      className="block min-w-0 flex-1 rounded-lg transition-colors hover:bg-muted/20"
     >
-      <InlineLinkLoading className="absolute right-3 top-3" />
       {content}
     </Link>
   ) : (
@@ -295,7 +293,7 @@ export function TransactionItem({
                   return;
                 }
 
-                navigate(0);
+                revalidate();
               }}
             >
               <EyeOff className="size-4 text-muted-foreground" />

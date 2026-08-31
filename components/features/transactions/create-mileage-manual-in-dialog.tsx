@@ -1,8 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { Plus } from 'lucide-react';
+import { revalidate } from '@/lib/data/store';
 import { createMileageManualIn } from '@/lib/actions/mileage-actions';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -24,7 +24,6 @@ interface CreateMileageManualInDialogProps {
 export function CreateMileageManualInDialog({
   accountId,
 }: CreateMileageManualInDialogProps) {
-  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -76,7 +75,7 @@ export function CreateMileageManualInDialog({
               });
 
               setOpen(false);
-              navigate(0);
+              revalidate();
             } catch (error) {
               setError(error instanceof Error ? error.message : 'Failed to add miles');
             } finally {

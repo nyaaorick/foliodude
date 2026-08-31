@@ -1,13 +1,13 @@
 'use client';
 
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import {
   AccountType,
   SUPPORTED_CURRENCIES,
   type AccountWithStats,
   type CurrencyId,
 } from '@/lib/types/accounts';
+import { revalidate } from '@/lib/data/store';
 import { createAccount } from '@/lib/actions/create-accounts-actions';
 import { AIRLINE_PROGRAMS, type AirlineProgram } from '@/lib/types/mileage';
 import { REWARD_CURRENCIES, type RewardCurrencyId } from '@/lib/types/rewards';
@@ -48,7 +48,6 @@ function formatAccountOption(account: AccountWithStats) {
 }
 
 export function CreateAccountDialog({ accounts }: CreateAccountDialogProps) {
-  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [type, setType] = useState<AccountType>(AccountType.ASSET);
   const [name, setName] = useState('');
@@ -167,7 +166,7 @@ export function CreateAccountDialog({ accounts }: CreateAccountDialogProps) {
 
       setOpen(false);
       resetForm();
-      navigate(0);
+      revalidate();
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Failed to create account');
     } finally {

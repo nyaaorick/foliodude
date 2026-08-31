@@ -2,8 +2,9 @@
 
 import { useState } from 'react';
 import Decimal from 'decimal.js';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { Loader2, Pencil, Trash2 } from 'lucide-react';
+import { revalidate } from '@/lib/data/store';
 import { setAssetApy } from '@/lib/actions/update-accounts-actions';
 import { AccountType, type AccountWithStats } from '@/lib/types/accounts';
 import type { RewardRateMap } from '@/lib/types/rewards';
@@ -13,7 +14,6 @@ import {
   getLiabilityBalanceToneClass,
 } from '@/lib/utils/account-balance-display';
 import { getAirlineProgramLabel } from '@/lib/utils/display-labels';
-import { InlineLinkLoading } from '@/components/features/navigation/loading-ui';
 import { MileageBalanceCard, RewardBalanceList } from '@/components/features/rewards';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
@@ -65,7 +65,6 @@ export function AccountCard({
   onDelete,
   isDeleting = false,
 }: AccountCardProps) {
-  const navigate = useNavigate();
   const isLiability = account.type === AccountType.LIABILITY;
   const isAirlineMiles = account.type === AccountType.AIRLINE_MILES;
   const isShare = account.type === AccountType.SHARE;
@@ -97,8 +96,7 @@ export function AccountCard({
   return (
     <div className="flex items-start justify-between gap-4 rounded-[1.4rem] border border-border/80 bg-card/95 p-5 shadow-[0_10px_24px_rgba(48,33,22,0.06)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_16px_30px_rgba(48,33,22,0.09)]">
       <div className="min-w-0 flex-1 space-y-4">
-        <Link to={`/accounts/${account.id}`} className="relative block space-y-3">
-          <InlineLinkLoading className="absolute right-2 top-2" />
+        <Link to={`/accounts/${account.id}`} className="block space-y-3">
           <div className="flex items-center gap-2">
             <span className="truncate text-base font-medium tracking-tight">{account.name}</span>
             <span className="shrink-0 rounded-full border border-border/80 bg-accent/60 px-2.5 py-1 text-[11px] tracking-[0.18em] text-muted-foreground">
@@ -203,7 +201,7 @@ export function AccountCard({
                         apy: nextApy,
                       });
                       setApyDialogOpen(false);
-                      navigate(0);
+                      revalidate();
                     } catch (caughtError) {
                       if (!(caughtError instanceof Error)) {
                         throw caughtError;

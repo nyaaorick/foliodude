@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { revalidate } from '@/lib/data/store';
 import { createTransaction } from '@/lib/actions/createTransaction';
 import { EXPENSE_CATEGORIES } from '@/lib/data/expense-categories';
 import { Button } from '@/components/ui/button';
@@ -34,7 +34,6 @@ export function CreateTransactionDialog({
   accountId,
   accountCurrency,
 }: CreateTransactionDialogProps) {
-  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [category, setCategory] = useState('Dining');
   const [submitting, setSubmitting] = useState(false);
@@ -67,7 +66,7 @@ export function CreateTransactionDialog({
       });
 
       setOpen(false);
-      navigate(0);
+      revalidate();
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Failed to create transaction');
     } finally {

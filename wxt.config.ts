@@ -10,7 +10,21 @@ export default defineConfig({
     version: '0.1.0',
     // `storage` backs WXT's browser.storage helpers; the financial data itself
     // lives in IndexedDB/OPFS via PGLite (Phase 2), which needs no permission.
-    permissions: ['storage'],
+    // `identity` backs the OAuth flow (launchWebAuthFlow + getRedirectURL).
+    permissions: ['storage', 'identity'],
+    // Host permissions, not for reach but for CORS: an extension page's fetch
+    // to Google's token and Drive endpoints is cross-origin, and these let it
+    // through without depending on Google's CORS headers for a Desktop-type
+    // OAuth client. Both are narrow — no <all_urls>, nothing user-facing.
+    host_permissions: [
+      'https://oauth2.googleapis.com/*',
+      'https://www.googleapis.com/*',
+    ],
+    // Toolbar button; the background script opens the app in a full tab so the
+    // extension is not locked to the ~350px sidebar. See entrypoints/background.ts.
+    action: {
+      default_title: 'Open FolioDude in a tab',
+    },
     browser_specific_settings: {
       gecko: {
         id: 'foliodude@foliodude.it.com',

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { revalidate } from '@/lib/data/store';
 import { createRewardTransaction } from '@/lib/actions/reward-actions';
 import { TransactionType } from '@/lib/types/transactions';
 import { getTransactionTypeLabel } from '@/lib/utils/display-labels';
@@ -35,7 +35,6 @@ export function CreateRewardTransactionDialog({
   accountId,
   triggerLabel,
 }: CreateRewardTransactionDialogProps) {
-  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [direction, setDirection] = useState<
     TransactionType.REWARD_TRANSFER_IN | TransactionType.REWARD_REDEEM
@@ -72,7 +71,7 @@ export function CreateRewardTransactionDialog({
       });
 
       setOpen(false);
-      navigate(0);
+      revalidate();
     } catch (error) {
       if (!(error instanceof Error)) {
         throw error;

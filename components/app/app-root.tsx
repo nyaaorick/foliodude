@@ -1,6 +1,8 @@
-import { lazy, Suspense, type ComponentType, type ReactNode } from 'react';
+import { lazy, Suspense, useEffect, type ComponentType, type ReactNode } from 'react';
 import { HashRouter, MemoryRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { AppShell } from '@/components/features/navigation/app-shell';
+import { completeRedirectSignIn } from '@/lib/auth/google';
+import { startAutoSync } from '@/lib/sync/engine';
 
 /**
  * Shared React root for every build target.
@@ -20,7 +22,7 @@ const AccountsPage = lazy(() => import('@/pages/accounts'));
 const AccountDetailPage = lazy(() => import('@/pages/account-detail'));
 const LabPage = lazy(() => import('@/pages/lab'));
 const ContactUsPage = lazy(() => import('@/pages/contact-us'));
-const LoginPage = lazy(() => import('@/pages/login'));
+const SyncPage = lazy(() => import('@/pages/sync'));
 
 function PageFallback() {
   return (
@@ -42,6 +44,16 @@ const ROUTERS: Record<RouterMode, ComponentType<{ children: ReactNode }>> = {
 export function AppRoot({ router }: { router: RouterMode }) {
   const Router = ROUTERS[router];
 
+  useEffect(() => {
+    // A PWA sign-in returns as a full page load carrying `?code=`, so the
+    // exchange has to happen before the sync engine looks for a session.
+    void completeRedirectSignIn()
+      .catch((error: unknown) => {
+        console.error('[auth] redirect sign-in failed', error);
+      })
+      .finally(startAutoSync);
+  }, []);
+
   return (
     <Router>
       <AppShell>
@@ -53,7 +65,7 @@ export function AppRoot({ router }: { router: RouterMode }) {
             <Route path="/accounts/:id" element={<AccountDetailPage />} />
             <Route path="/lab" element={<LabPage />} />
             <Route path="/contact-us" element={<ContactUsPage />} />
-            <Route path="/login" element={<LoginPage />} />
+            <Route path="/sync" element={<SyncPage />} />
             <Route path="*" element={<Navigate to={HOME_ROUTE} replace />} />
           </Routes>
         </Suspense>

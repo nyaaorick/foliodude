@@ -1,20 +1,5 @@
 'use client';
 
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  Legend,
-  Line,
-  LineChart,
-  Pie,
-  PieChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from 'recharts';
 import { AccountType } from '@/lib/types/accounts';
 import type { DashboardAnalytics } from '@/lib/types/dashboard';
 import {
@@ -30,6 +15,7 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
+import { DonutChart, LineChart, StackedBarChart } from './charts';
 
 interface DashboardOverviewProps {
   analytics: DashboardAnalytics;
@@ -56,29 +42,38 @@ function formatLiabilityUsd(value: number) {
   });
 }
 
-function formatTooltipUsd(
-  value: number | string | readonly (string | number)[] | undefined,
-) {
-  const rawValue = Array.isArray(value) ? value[0] : value;
-  const numericValue = typeof rawValue === 'number' ? rawValue : Number(rawValue ?? 0);
-  return formatUsd(Number.isFinite(numericValue) ? numericValue : 0);
-}
-
 function formatMonth(value: string) {
   const [year, month] = value.split('-');
-  const date = new Date(Number(year), Number(month) - 1, 1);
+  return new Intl.DateTimeFormat('en-US', { month: 'short', year: '2-digit' })
+    .format(new Date(Number(year), Number(month) - 1, 1));
+}
 
-  return new Intl.DateTimeFormat('en-US', {
-    month: 'short',
-    year: '2-digit',
-  }).format(date);
+function formatDay(value: string) {
+  const [year, month, day] = value.split('-');
+  return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' })
+    .format(new Date(Number(year), Number(month) - 1, Number(day)));
 }
 
 function EmptyState({ label }: { label: string }) {
   return (
-    <div className="flex h-[280px] items-center justify-center rounded-xl border border-dashed border-border/80 bg-muted/25 text-sm text-muted-foreground">
+    <div className="flex h-32 items-center justify-center rounded-xl border border-dashed border-border/80 bg-muted/25 text-center text-sm text-muted-foreground">
       {label}
     </div>
+  );
+}
+
+function StatCard({ label, value, toneClass }: { label: string; value: string; toneClass?: string }) {
+  return (
+    <Card className="border-border/70 bg-background/80">
+      <CardHeader>
+        <CardDescription>{label}</CardDescription>
+        <CardTitle
+          className={`text-2xl tabular-nums tracking-tight [font-family:var(--font-display)] ${toneClass ?? ''}`}
+        >
+          {value}
+        </CardTitle>
+      </CardHeader>
+    </Card>
   );
 }
 
@@ -91,44 +86,28 @@ export function DashboardOverview({ analytics }: DashboardOverviewProps) {
     monthlyExpenses,
     expenseCategories,
   } = analytics;
-  const liabilityTotalDisplayValue = toSignedLiabilityDisplayValue(totals.liabilitiesUsd);
-  const debtSummaryDisplayValue = toSignedLiabilityDisplayValue(debtSummary?.usd ?? 0);
+  const liabilityTotal = toSignedLiabilityDisplayValue(totals.liabilitiesUsd);
+  const debtTotal = toSignedLiabilityDisplayValue(debtSummary?.usd ?? 0);
+  const allocationTotal = allocation.reduce((sum, slice) => sum + slice.usd, 0);
 
   return (
-    <div className="space-y-6">
-      <div className="grid gap-4 md:grid-cols-3">
-        <Card className="border-border/70 bg-background/80 shadow-[0_20px_60px_rgba(69,41,19,0.08)]">
-          <CardHeader>
-            <CardDescription>Net Worth</CardDescription>
-            <CardTitle className="text-3xl tracking-tight [font-family:var(--font-display)]">
-              {formatUsd(totals.netWorthUsd)}
-            </CardTitle>
-          </CardHeader>
-        </Card>
-        <Card className="border-border/70 bg-background/80 shadow-[0_20px_60px_rgba(69,41,19,0.08)]">
-          <CardHeader>
-            <CardDescription>Assets</CardDescription>
-            <CardTitle className="text-3xl tracking-tight [font-family:var(--font-display)]">
-              {formatUsd(totals.assetsUsd)}
-            </CardTitle>
-          </CardHeader>
-        </Card>
-        <Card className="border-border/70 bg-background/80 shadow-[0_20px_60px_rgba(69,41,19,0.08)]">
-          <CardHeader>
-            <CardDescription>Liabilities</CardDescription>
-            <CardTitle
-              className={`text-3xl tracking-tight [font-family:var(--font-display)] ${getLiabilityBalanceToneClass(
-                liabilityTotalDisplayValue,
-              )}`}
-            >
-              {formatLiabilityUsd(liabilityTotalDisplayValue)}
-            </CardTitle>
-          </CardHeader>
-        </Card>
+    <div className="space-y-4">
+      {/* Two columns even at 350px: three stacked cards would push the charts
+          below the fold in the sidebar. Net worth spans the row. */}
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+        <div className="col-span-2 md:col-span-1">
+          <StatCard label="Net Worth" value={formatUsd(totals.netWorthUsd)} />
+        </div>
+        <StatCard label="Assets" value={formatUsd(totals.assetsUsd)} />
+        <StatCard
+          label="Liabilities"
+          value={formatLiabilityUsd(liabilityTotal)}
+          toneClass={getLiabilityBalanceToneClass(liabilityTotal)}
+        />
       </div>
 
-      <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
-        <Card className="border-border/70 bg-background/85 shadow-[0_20px_60px_rgba(69,41,19,0.08)]">
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Card className="border-border/70 bg-background/85">
           <CardHeader>
             <CardTitle>Asset Allocation</CardTitle>
             <CardDescription>Current USD valuation across positive asset groups.</CardDescription>
@@ -137,125 +116,84 @@ export function DashboardOverview({ analytics }: DashboardOverviewProps) {
             {allocation.length === 0 ? (
               <EmptyState label="No asset balances yet." />
             ) : (
-              <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_220px]">
-                <div className="h-[320px]">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie
-                        data={allocation}
-                        dataKey="usd"
-                        nameKey="label"
-                        innerRadius={72}
-                        outerRadius={112}
-                        paddingAngle={2}
-                      >
-                        {allocation.map((slice) => (
-                          <Cell key={slice.key} fill={slice.color} />
-                        ))}
-                      </Pie>
-                      <Tooltip
-                        formatter={(value) => formatTooltipUsd(value)}
-                        contentStyle={{
-                          borderRadius: 16,
-                          borderColor: 'rgba(91, 76, 60, 0.18)',
-                        }}
-                      />
-                    </PieChart>
-                  </ResponsiveContainer>
-                </div>
-                <div className="space-y-3">
+              <div className="space-y-3">
+                <DonutChart slices={allocation} height={168} />
+                <ul className="space-y-1.5">
                   {allocation.map((slice) => (
-                    <div
+                    <li
                       key={slice.key}
-                      className="rounded-2xl border border-border/70 bg-muted/30 px-4 py-3"
+                      className="flex items-center gap-2 text-sm"
                     >
-                      <div className="flex items-center gap-2 text-sm font-medium">
-                        <span
-                          className="inline-block size-2.5 rounded-full"
-                          style={{ backgroundColor: slice.color }}
-                        />
-                        {slice.label}
-                      </div>
-                      <p className="mt-2 text-lg font-medium tabular-nums">
-                        {formatUsd(slice.usd)}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {slice.percentage.toFixed(1)}% of assets
-                      </p>
-                    </div>
+                      <span
+                        className="size-2.5 shrink-0 rounded-full"
+                        style={{ backgroundColor: slice.color }}
+                      />
+                      <span className="min-w-0 flex-1 truncate">{slice.label}</span>
+                      <span className="shrink-0 tabular-nums">{formatUsd(slice.usd)}</span>
+                      <span className="w-11 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
+                        {allocationTotal > 0 ? `${slice.percentage.toFixed(0)}%` : '—'}
+                      </span>
+                    </li>
                   ))}
-                </div>
+                </ul>
               </div>
             )}
           </CardContent>
         </Card>
 
-        <Card className="border-border/70 bg-background/85 shadow-[0_20px_60px_rgba(69,41,19,0.08)]">
+        <Card className="border-border/70 bg-background/85">
           <CardHeader>
             <CardTitle>Credit Card Debt</CardTitle>
             <CardDescription>Liabilities are tracked separately from the asset mix.</CardDescription>
           </CardHeader>
-          <CardContent>
-            <div className="flex h-[380px] flex-col rounded-2xl border border-border/70 bg-muted/25 p-4">
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div className="rounded-xl border border-border/70 bg-background/80 px-3 py-2.5">
-                  <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                    Net liability
-                  </p>
-                  <p
-                    className={`mt-1 text-2xl font-semibold tabular-nums [font-family:var(--font-display)] ${
-                      getLiabilityBalanceToneClass(debtSummaryDisplayValue) || 'text-muted-foreground'
-                    }`}
-                  >
-                    {formatLiabilityUsd(debtSummaryDisplayValue)}
-                  </p>
-                </div>
-                <div className="rounded-xl border border-border/70 bg-background/80 px-3 py-2.5">
-                  <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                    Gross / Overpay
-                  </p>
-                  <p className="mt-1 text-sm font-medium tabular-nums text-foreground">
-                    {formatUsd(debtSummary?.grossDebtUsd ?? 0)} / {formatUsd(debtSummary?.overpaymentUsd ?? 0)}
-                  </p>
-                </div>
+          <CardContent className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="rounded-xl border border-border/70 bg-muted/25 px-3 py-2.5">
+                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                  Net liability
+                </p>
+                <p
+                  className={`mt-1 text-xl font-semibold tabular-nums [font-family:var(--font-display)] ${
+                    getLiabilityBalanceToneClass(debtTotal) || 'text-muted-foreground'
+                  }`}
+                >
+                  {formatLiabilityUsd(debtTotal)}
+                </p>
               </div>
-
-              <div className="mt-3 flex items-center justify-between px-1 text-xs font-medium tracking-wide text-muted-foreground">
-                <span>Account</span>
-                <span>Balance</span>
-              </div>
-
-              <div className="mt-2 flex-1 space-y-2 overflow-auto pr-1">
-                {debtSummary?.accounts.length ? (
-                  debtSummary.accounts.map((account) => (
-                    <div
-                      key={account.account_id}
-                      className="flex items-center justify-between rounded-xl border border-border/70 bg-background/80 px-3 py-2"
-                    >
-                      <p className="truncate pr-3 text-sm text-foreground">
-                        {account.name}
-                      </p>
-                      <p
-                        className={`shrink-0 text-sm font-medium tabular-nums ${
-                          getLiabilityBalanceToneClass(account.usd) || 'text-muted-foreground'
-                        }`}
-                      >
-                        {formatLiabilityUsd(account.usd)}
-                      </p>
-                    </div>
-                  ))
-                ) : (
-                  <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-border/70 bg-background/50 text-sm text-muted-foreground">
-                    No credit card accounts yet.
-                  </div>
-                )}
+              <div className="rounded-xl border border-border/70 bg-muted/25 px-3 py-2.5">
+                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                  Gross / Overpay
+                </p>
+                <p className="mt-1 text-sm font-medium tabular-nums">
+                  {formatUsd(debtSummary?.grossDebtUsd ?? 0)} /{' '}
+                  {formatUsd(debtSummary?.overpaymentUsd ?? 0)}
+                </p>
               </div>
             </div>
+
+            {debtSummary?.accounts.length ? (
+              <ul className="space-y-1.5">
+                {debtSummary.accounts.map((account) => (
+                  <li key={account.account_id} className="flex items-center gap-2 text-sm">
+                    <span className="min-w-0 flex-1 truncate">{account.name}</span>
+                    <span
+                      className={`shrink-0 tabular-nums ${
+                        getLiabilityBalanceToneClass(account.usd) || 'text-muted-foreground'
+                      }`}
+                    >
+                      {formatLiabilityUsd(account.usd)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <EmptyState label="No credit card accounts yet." />
+            )}
           </CardContent>
         </Card>
       </div>
 
-      <Card className="border-border/70 bg-background/85 shadow-[0_20px_60px_rgba(69,41,19,0.08)]">
+      <Card className="border-border/70 bg-background/85">
         <CardHeader>
           <CardTitle>Net Worth History</CardTitle>
           <CardDescription>Daily snapshots stored from the dashboard.</CardDescription>
@@ -264,92 +202,57 @@ export function DashboardOverview({ analytics }: DashboardOverviewProps) {
           {netWorthHistory.length === 0 ? (
             <EmptyState label="No history yet." />
           ) : (
-            <div className="h-[320px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={netWorthHistory}>
-                  <CartesianGrid stroke="rgba(120, 105, 90, 0.16)" vertical={false} />
-                  <XAxis
-                    dataKey="date"
-                    tickFormatter={formatMonth}
-                    tickLine={false}
-                    axisLine={false}
-                    minTickGap={32}
-                  />
-                  <YAxis
-                    tickFormatter={(value: number) => formatUsd(value)}
-                    tickLine={false}
-                    axisLine={false}
-                    width={88}
-                  />
-                  <Tooltip
-                    labelFormatter={(value) => formatMonth(String(value))}
-                    formatter={(value) => formatTooltipUsd(value)}
-                    contentStyle={{
-                      borderRadius: 16,
-                      borderColor: 'rgba(91, 76, 60, 0.18)',
-                    }}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="netWorthUsd"
-                    stroke="#3B7A57"
-                    strokeWidth={3}
-                    dot={false}
-                    activeDot={{ r: 5, fill: '#3B7A57' }}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
+            <LineChart
+              height={168}
+              points={netWorthHistory.map((point) => ({
+                label: point.date,
+                value: point.netWorthUsd,
+              }))}
+              formatValue={formatUsd}
+              formatLabel={formatDay}
+            />
           )}
         </CardContent>
       </Card>
 
-      <Card className="border-border/70 bg-background/85 shadow-[0_20px_60px_rgba(69,41,19,0.08)]">
+      <Card className="border-border/70 bg-background/85">
         <CardHeader>
           <CardTitle>Monthly Expenses</CardTitle>
           <CardDescription>Expense totals grouped by category and converted to USD.</CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-3">
           {monthlyExpenses.length === 0 ? (
             <EmptyState label="No expense transactions yet." />
           ) : (
-            <div className="h-[360px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={monthlyExpenses}>
-                  <CartesianGrid stroke="rgba(120, 105, 90, 0.16)" vertical={false} />
-                  <XAxis
-                    dataKey="month"
-                    tickFormatter={formatMonth}
-                    tickLine={false}
-                    axisLine={false}
-                  />
-                  <YAxis
-                    tickFormatter={(value: number) => formatUsd(value)}
-                    tickLine={false}
-                    axisLine={false}
-                    width={88}
-                  />
-                  <Tooltip
-                    labelFormatter={(value) => formatMonth(String(value))}
-                    formatter={(value) => formatTooltipUsd(value)}
-                    contentStyle={{
-                      borderRadius: 16,
-                      borderColor: 'rgba(91, 76, 60, 0.18)',
-                    }}
-                  />
-                  <Legend />
-                  {expenseCategories.map((category, index) => (
-                    <Bar
-                      key={category}
-                      dataKey={category}
-                      stackId="expenses"
-                      fill={CATEGORY_COLORS[index % CATEGORY_COLORS.length]}
-                      radius={index === expenseCategories.length - 1 ? [6, 6, 0, 0] : 0}
+            <>
+              <StackedBarChart
+                height={168}
+                points={monthlyExpenses.map((point) => ({
+                  label: String(point.month),
+                  values: Object.fromEntries(
+                    expenseCategories.map((category) => [
+                      category,
+                      typeof point[category] === 'number' ? (point[category] as number) : 0,
+                    ]),
+                  ),
+                }))}
+                categories={expenseCategories}
+                colors={CATEGORY_COLORS}
+                formatValue={formatUsd}
+                formatLabel={formatMonth}
+              />
+              <ul className="flex flex-wrap gap-x-3 gap-y-1.5">
+                {expenseCategories.map((category, index) => (
+                  <li key={category} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <span
+                      className="size-2 rounded-full"
+                      style={{ backgroundColor: CATEGORY_COLORS[index % CATEGORY_COLORS.length] }}
                     />
-                  ))}
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
+                    {category}
+                  </li>
+                ))}
+              </ul>
+            </>
           )}
         </CardContent>
       </Card>

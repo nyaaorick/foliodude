@@ -15,6 +15,15 @@ Transition **FolioDude** from a Web SaaS (Next.js SSR + remote Supabase PostgreS
 - **Top-Tier Mobile Portrait Experience** — one-handed logging, iOS safe-area adaptation, `100dvh`, gesture-driven bottom sheets.
 - **Durable Data** — the local database is the source of truth, so backup is a correctness requirement, not a feature. Local export lands in Phase 2; Google Drive sync in Phase 4. A user who never signs in still has full local export/import as their backup path.
 
+### Standing Constraint: Pre-Release — No Backward Compatibility
+
+Nothing has shipped. There is no installed base, so no change owes compatibility
+to anything: schema defects are corrected in the migration that introduced them
+rather than in a new corrective one, a stale development database is wiped
+rather than designed around, and legacy code is deleted rather than quarantined.
+The append-only migration rule in `lib/db/migrate.ts` starts applying at first
+release (§5 Phase 6), not before. Full working rules in §9.
+
 ### Standing Constraint: No Shipped Credentials
 
 A browser extension and a static PWA are both **fully readable by the user**. Any API key compiled into the bundle is public. There is no way around this without a server, which would break the $0 / zero-maintenance target.
@@ -126,15 +135,23 @@ on static hosting).
 - [ ] Manual FX rate / share price entry UI (§7's "user can correct the API-fetched value" design). `setSharePrice` exists at the action layer (`lib/actions/share-actions.ts`) and is tested; there is no UI yet, and FX has no persistence layer for a fetched-vs-overridden value yet — only the live 1:1-fallback fetch.
 - [ ] Declare `wasm-unsafe-eval` in the extension CSP and confirm the sidebar loads the WASM module against a live PGlite instance (only tested in Node so far, not inside the WXT-built extension).
 
-### Phase 3: UI Redesign & Component Migration
-- [ ] Migrate `components/features/*` and the legacy `app/(dashboard)` UI into responsive views.
-- [ ] **Desktop** — adapt the layout to the ~350px Firefox sidebar constraint.
-- [ ] **Mobile** — Portrait layout with safe-area support, bottom tab bar, and bottom sheet drawers.
-- [ ] Evaluate Recharts for narrow viewports; if the bundle cost is not justified at 350px, replace with lightweight inline SVG charts.
-- [ ] **Service worker for the PWA** — offline support is a Core Target, and on iOS an app-shell precache is the only way to get it. Pulled forward from Phase 6 so offline behaviour is designed alongside the UI rather than bolted on at deploy time.
-- [ ] Retire the `app` and `components/features/*` entries from the `tsconfig.json` quarantine list.
+### Phase 3: UI Redesign & Component Migration — ✅ Done
+- [x] Migrate `components/features/*` and the legacy `app/(dashboard)` UI into responsive views. `pages/*.tsx` now read real data; `app/` is deleted (it was reference-only, and its `accounts/[id]/page.tsx` was truncated in git anyway — the detail page was reconstructed from its sections).
+- [x] **Replaced server-driven refresh with a revalidation bus** (`lib/data/store.ts` + `useLiveQuery`). The router port had left 18 `navigate(0)` calls standing in for `revalidatePath()`; that is a no-op under `MemoryRouter` (the extension never refreshed after a write) and a full document reload under `HashRouter`, which throws away the warm PGlite WASM instance. Mutations now call `revalidate()` and every open query refetches in-process.
+- [x] **One responsive layout, no per-target branch.** The shell breaks on viewport width alone: below `md` it is a bottom tab bar (Firefox sidebar *and* iOS portrait), at `md`+ a left rail. Controls grow to 44px touch targets below `md`; inputs were already 16px, so iOS focus-zoom was never an issue.
+- [x] **The extension is not locked to the sidebar.** A toolbar `action` opens the same page in a full browser tab, where it renders as an ordinary desktop site. `sidebar_action` stays for quick access. No `tabs` permission — deduplicating tabs is not worth the AMO scrutiny that permission attracts.
+- [x] **Mobile** — safe-area insets at the shell, `100dvh` throughout, and bottom sheets. The sheet is implemented once in `components/ui/dialog.tsx`, so all 14 existing dialogs became sheets below `md` with no per-dialog edits: bottom-anchored, height-capped so long forms scroll inside, with a drag handle and swipe-down dismissal.
+- [x] **Recharts removed** — measured, not assumed. Rendering the same wired dashboard both ways: the dashboard chunk is **392.75 kB (113.27 kB gzip) with Recharts** vs **13.68 kB (4.84 kB gzip)** with the inline SVG charts in `components/features/dashboard/charts.tsx` — a 96% cut on the route, and total JS across the PWA drops 1.7 MB → 1.3 MB. The SVG charts size themselves from a measured container width rather than a scaled `viewBox`, so labels stay at a fixed physical size from 350px to full width, and each has a touch-sized hit target per data point (better than a hover-only tooltip on iOS).
+- [x] **Service worker for the PWA** — generated at build time by a plugin in `vite.pwa.config.ts` that reads the real bundle, so the precache list cannot go stale against Vite's content hashes. Navigations resolve to the cached shell (the app is a `HashRouter`, so every route is the same document). **PGlite's `.wasm`/`.data` are deliberately excluded**: they total ~16MB, `cache.addAll()` is all-or-nothing, and precaching them would fail install against iOS's storage quota and leave *no* offline support. The fetch handler caches them on first real use instead; precache is 1.35 MB.
+- [x] Retire the `app` and `components/features/*` entries from the `tsconfig.json` quarantine list. The list is gone entirely — `exclude` is now just `node_modules` and `.output`, and `npm run compile` is clean project-wide.
 
-### Phase 4: Google Sign-In & Drive Sync
+**Explicitly out of scope, by decision — not merely deferred:** local
+export/import, any security-hardening work, and the `wasm-unsafe-eval` CSP
+declaration. Phase 3 did not need them and will not add them. Note this leaves
+risk #2 (iOS evicting IndexedDB) open with no mitigation in place: until a
+backup path exists, the local database is the only copy of the data.
+
+### Phase 4: Google Sign-In & Drive Sync — ✅ Done
 
 No backend. Google is the only identity provider and the only storage backend —
 one relationship instead of Auth-plus-Storage-plus-multiple-OAuth-providers. See
@@ -144,43 +161,93 @@ would undo the Core Targets' Zero-Fee goal; GitHub/Microsoft sign-in would each
 need their own storage integration (a private repo, OneDrive) for no benefit
 over Google alone.
 
-- [ ] **Google OAuth via PKCE — no client secret, no server.**
-  - Register a Google Cloud OAuth client. Request only the `drive.appdata`
-    scope — Google classifies it **non-sensitive**, so it needs only Google's
-    basic app verification, not the sensitive/restricted-scope review (which
-    would mean a privacy-policy URL, a demo video, and a real review queue).
-  - **Firefox extension**: `browser.identity.launchWebAuthFlow()` +
-    `browser.identity.getRedirectURL()`. Since Firefox 86 this resolves to a
-    loopback address (`http://127.0.0.1/mozoauth2/...`, RFC 8252 §7.3), which
-    is exactly the redirect pattern Google's own "Desktop app" OAuth client
-    type expects — register the client as that type, not "Web application".
-  - **iOS PWA (Safari)**: standard redirect-based Authorization Code + PKCE
-    flow. **Unverified** — Safari's ITP and Google's embedded-webview detection
-    (`disallowed_useragent`) have both been sources of breakage for OAuth in
-    non-standard contexts, and a home-screen PWA's exact classification isn't
-    confirmed. **Spike this on a real iPhone before building the UI around it**:
-    a minimal static HTML page, the OAuth popup/redirect, one Drive
-    `appDataFolder` read/write. If it fails, the fallback is sign-in gated to
-    desktop only, with iOS staying on local export/import (§5 Phase 2).
-- [ ] **Google Drive as storage.** Direct client-side REST calls to
-  `www.googleapis.com/drive/v3/files` with `spaces=appDataFolder` — no upload
-  server, no Storage bucket to provision. The folder is invisible in the user's
-  normal Drive UI. No client-side encryption of the snapshot — a deliberate
-  scope cut (this is bookkeeping data, not treated as sensitive); the snapshot
-  sits in the user's own Google account under the same trust boundary as their
-  Drive/Gmail already do.
-- [ ] **Single-writer model (explicit design decision — this is inherent to
-  whole-file snapshot sync, not specific to Drive).** Last-write-wins: editing
-  on two devices between syncs silently destroys one side's work. One device
-  is designated the writer and others are read-only until promoted, with the
-  writer shown in the UI.
-  Per-row change-log sync is an order of magnitude more work and stays out of
-  scope; revisit only if single-writer proves too restrictive in practice.
-- [ ] `SyncEngine` — debounced snapshot upload to `appDataFolder`; download and
-  restore flow.
-- [ ] Complete Google's basic app verification before shipping past a handful
-  of test users — `drive.appdata` avoids the heavy sensitive-scope review, but
-  an unverified OAuth client still shows a warning screen and caps test users.
+- [x] **Google OAuth via PKCE — no client secret, no server.** `lib/auth/`:
+  `pkce.ts` (S256 challenge), `config.ts`, `google.ts`, `tokens.ts`. Scope is
+  `drive.appdata` and nothing else — not even `email`, so the app never learns a
+  Google account id and identity stays device-local.
+  - **Two client ids, not one.** This is the correction to what this phase
+    originally specified. The extension needs Google's **Desktop app** client
+    type (Firefox's `identity.getRedirectURL()` is a loopback address, which the
+    Web type rejects); the PWA needs a **Web application** client with its https
+    origin registered. They cannot be the same client, so the build reads
+    `VITE_GOOGLE_CLIENT_ID_EXTENSION` and `VITE_GOOGLE_CLIENT_ID_WEB`
+    independently. Neither is committed; a target without one reports sign-in as
+    unavailable and the rest of the app works untouched.
+  - **Firefox**: `identity.launchWebAuthFlow()`, exchange inside one awaited
+    call. `identity` permission plus narrow host permissions for
+    `oauth2.googleapis.com` and `www.googleapis.com` — needed for CORS on an
+    extension page's fetch, not for reach.
+  - **iOS PWA**: full-page redirect, verifier parked in `sessionStorage`,
+    completed by `completeRedirectSignIn()` at startup, with `?code=` stripped
+    from the URL so a refresh cannot replay a single-use code. **Still
+    unverified on real hardware** (risk #6) — the code is written and typechecks,
+    but Safari ITP and Google's `disallowed_useragent` detection have not been
+    tested from a standalone home-screen PWA. Leaving
+    `VITE_GOOGLE_CLIENT_ID_WEB` unset is the documented fallback and needs no
+    code change.
+  - `access_type=offline` + `prompt=consent` so a refresh token is issued;
+    without it the access token dies hourly and a background sync engine simply
+    stops working. Tokens live in `localStorage`, never in the database — the
+    database is the thing being uploaded.
+- [x] **Google Drive as storage.** `lib/sync/drive.ts` — direct client REST
+  against `files` with `spaces=appDataFolder`. Multipart create on first sync,
+  plain media `PATCH` after. No upload server, no bucket. No client-side
+  encryption (risk #9, accepted).
+- [x] **Logical snapshot, not `dumpDataDir()`.** `lib/db/backup.ts`, the module
+  003_local_settings.sql's SYNC NOTE anticipated. A raw data-directory dump
+  would carry the `apikey:` rows, which are device-local secrets that must never
+  leave the device (§7) — filtering them requires reading logically anyway, and
+  the result is far smaller and survives a Postgres page-layout change. Rows
+  travel via `row_to_json`/`jsonb_populate_recordset`, so enums, jsonb, dates,
+  and numerics round-trip through Postgres' own casts. Restore runs in one
+  transaction, re-keys rows onto this device's local `user_id`, preserves local
+  API keys, and re-advances the `transactions.seq` sequence. Covered by a
+  round-trip test that asserts the API key is absent from the uploaded payload.
+- [x] **Single-writer model, actually enforced.** `lib/sync/writer.ts` holds the
+  designation; `lib/db/session.ts` wraps `db.transaction()` with
+  `assertWritable()`. That one choke point is sufficient because every ledger
+  mutation in `lib/actions` runs in a transaction and nothing else does — reads
+  use `db.query` and stay available, as do the two legitimate device-local
+  writes (the dashboard's daily snapshot row, the `apikey:` settings). The sync
+  engine holds the raw handle, so restoring a snapshot — the one write a
+  read-only device must perform — is not blocked by its own rule. It fails open:
+  a device that has never seen a snapshot is writable, which keeps the
+  signed-out app fully functional.
+- [x] **First-sync collision is a decision, not a silent overwrite.** A second
+  device signing in with its own accounts and transactions does not adopt the
+  remote snapshot automatically — sync stops in a `blocked` state and the Sync
+  page makes the user pick a direction. The plan's single-writer rule addresses
+  concurrent editing; it never licensed destroying a device's existing ledger
+  the first time it signs in.
+- [x] `SyncEngine` — `lib/sync/engine.ts`. Debounced snapshot upload (4s after
+  writes settle, so a burst of edits is one upload), pull-and-restore, explicit
+  `promoteThisDevice()` / `adoptRemote()`.
+- [x] UI at `/sync`, a fifth bottom-tab entry. Shows sync state, the writer's
+  device name, the promote/adopt controls, and a device-rename field. A
+  read-only device also carries a banner above every page. The unreachable
+  `/login` page was folded into this one.
+- [x] **Fixed a schema self-contradiction found while building the snapshot
+  restore.** `001_init.sql` declared `ON DELETE SET NULL` on
+  `transactions.reference_transaction_id`, `from_account`, and `to_account`,
+  while `transactions_shape_check` requires those same columns NOT NULL for
+  particular row shapes — so the declared cleanup was unreachable. Deleting a
+  parent row raised a check violation naming a constraint the caller never
+  touched (REWARD_EARN, REWARD_TRANSFER_IN, MILEAGE_TRANSFER_IN,
+  MILEAGE_MANUAL_IN, REWARD_REDEEM, MILEAGE_REDEEM_FLIGHT), and in the one case
+  the shape check does not cover — `EXPENSE.from_account` — SET NULL *succeeded*
+  and silently left an expense attached to no account. Both are worse than a
+  refusal, so the FKs now use the NO ACTION default: a half-deleted closure
+  fails with a plain referential error, and deleting a whole closure in one
+  statement still works, which is what `deleteAction`'s account path already
+  did. Nothing in `lib/actions` relied on SET NULL — transaction deletes are
+  soft, account deletes remove the closure first.
+  **Corrected in `001_init.sql` rather than as a new migration** — see the
+  pre-release constraint in §1.
+
+- [ ] **Google's basic app verification is still outstanding** — it needs the
+  project owner's own Google Cloud account and cannot be done from here. Until
+  it is complete an unverified OAuth client shows a warning screen and caps
+  test users (risk #8).
 
 ### Phase 5: On-Device Receipt Scan (No Credentials, No Cloud)
 Full specification in §6.
@@ -359,11 +426,53 @@ variable, so both are out of the `tsconfig.json` quarantine.
 | # | Risk | Phase | Mitigation |
 | :-- | :--- | :-- | :--- |
 | 1 | PGlite exceeds iOS Safari's per-page memory ceiling | 2 | Spike on real hardware before any other Phase 2 work |
-| 2 | iOS evicts IndexedDB and destroys the only copy of the data | 2 | Local export/import lands in Phase 2, before real use; cloud sync in Phase 4 |
+| 2 | iOS evicts IndexedDB and destroys the only copy of the data | 2 | **Partly mitigated.** Local export/import is ruled out of development, so Drive sync (Phase 4) is now the only backup path — and it covers signed-in users only. A signed-out user still has exactly one copy of their data |
 | 3 | Two-device editing silently loses data under snapshot sync | 4 | Explicit single-writer model, writer shown in the UI |
 | 4 | AMO review friction over `wasm-unsafe-eval` | 2 | Declare the CSP narrowly and early; confirm the sidebar loads before building on it |
 | 5 | Tesseract accuracy too low on thermal-paper receipts | 5 | §6.7 corpus decides it; the confidence gate degrades to manual entry rather than to wrong data |
-| 6 | Google OAuth in a standalone iOS PWA is unverified — ITP or `disallowed_useragent` detection could block it | 4 | Real-device spike before building any Phase 4 UI; fallback is desktop-only sign-in with iOS staying on local export/import |
-| 7 | Recharts bundle cost unjustified at 350px sidebar width | 3 | Evaluate against lightweight inline SVG charts |
+| 6 | Google OAuth in a standalone iOS PWA is unverified — ITP or `disallowed_useragent` detection could block it | 4 | **Still open.** The redirect flow is implemented but never run on real hardware. Fallback needs no code change: leave `VITE_GOOGLE_CLIENT_ID_WEB` unset and the PWA reports sign-in unavailable |
+| 7 | ~~Recharts bundle cost unjustified at 350px sidebar width~~ | 3 | ✅ Closed. Measured at 392.75 kB vs 13.68 kB for the same dashboard; Recharts removed and the dependency dropped |
 | 8 | Unverified Google OAuth client hits the test-user cap / warning screen at real-user scale | 4 | Complete Google's basic app verification for `drive.appdata` before shipping past a handful of testers |
 | 9 | Snapshot sits unencrypted in the user's Drive — anyone with access to that Google account (or a support/compromise event on Google's side) can read it | 4 | Accepted: bookkeeping data, not treated as sensitive. Revisit only if the app later stores something more sensitive than transaction history |
+
+---
+
+## 9. Working Principles
+
+These govern how the remaining phases are built. They are enforced for agents by
+`.claude/skills/foliodude-workflow/SKILL.md`, which carries the same rules in
+operational form; this section is the rationale.
+
+**Pre-release means no backward compatibility.** See the standing constraint in
+§1. A corrective migration, a deprecation shim, or a dual code path for an old
+and new shape are all compatibility debt taken on for users who do not exist
+yet. A development database that has to be wiped after a schema change is an
+accepted cost, not a caveat worth raising.
+
+**Delete legacy; do not quarantine it.** Historical baggage is paid for on every
+read of the repo. Dead code gets deleted, not excluded from typecheck or kept
+"as reference" — git history is the reference. The `tsconfig.json` quarantine
+list that survived Phase 2 is the cautionary example: it kept a broken,
+unreachable `app/` directory alive across two phases, and the truncated file
+inside it was only discovered when Phase 3 tried to use it. Refactor
+aggressively: when a change reveals the surrounding design is wrong, fix the
+design rather than threading the change through it.
+
+**Fail fast.** Errors throw rather than degrade. No guards for states that
+cannot happen — such a check implies the impossible is possible. An error should
+name the actual problem: `transactions_shape_check` firing on a delete the
+caller never associated with it (§5 Phase 4) was a bug in the constraint, not a
+quirk to document. In a ledger a wrong value is worse than a missing one, which
+is also why the receipt-scan confidence gate (§6.6) prefers an empty field to a
+plausible guess.
+
+**Minimal tests.** One focused test per unit, aimed at what could silently
+corrupt or lose data — snapshot round-trips, destructive deletes, constraint
+interactions. Not what the typechecker already proves, and not layout. Tests run
+against real in-memory PGlite so the CHECK constraints actually execute.
+
+**Scope and token economy.** Work stays inside the requested phase; out-of-scope
+problems are reported, not fixed uninvited. Tradeoffs are measured before they
+are claimed — the Recharts removal (§5 Phase 3) became a decision only after
+building it both ways and comparing chunk sizes. Anything unverified is
+described as unverified.

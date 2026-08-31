@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { ArrowRightLeft } from 'lucide-react';
+import { revalidate } from '@/lib/data/store';
 import { createTransfer } from '@/lib/actions/createTransfer';
 import { buyShare, sellShare } from '@/lib/actions/share-actions';
 import { AccountType, type AccountOption } from '@/lib/types/accounts';
@@ -76,7 +76,6 @@ export function CreateTransferDialog({
   shareAccountId,
   triggerLabel,
 }: CreateTransferDialogProps) {
-  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -277,7 +276,7 @@ export function CreateTransferDialog({
       }
 
       setOpen(false);
-      navigate(0);
+      revalidate();
       return;
     }
 
@@ -321,7 +320,7 @@ export function CreateTransferDialog({
 
       setOpen(false);
       resetTransferState();
-      navigate(0);
+      revalidate();
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Failed to create transfer');
     } finally {

@@ -1,5 +1,3 @@
-'use server';
-
 import { z } from 'zod';
 import { createAccount } from '@/lib/actions/create-accounts-actions';
 import { createAssetsExpense } from '@/lib/actions/createAssetsExpense';

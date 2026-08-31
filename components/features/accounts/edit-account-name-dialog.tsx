@@ -1,8 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { Pencil } from 'lucide-react';
+import { revalidate } from '@/lib/data/store';
 import { updateAccount } from '@/lib/actions/update-accounts-actions';
 import { AccountType } from '@/lib/types/accounts';
 import { Button } from '@/components/ui/button';
@@ -33,7 +33,6 @@ export function EditAccountNameDialog({
   accountType,
   currency,
 }: EditAccountNameDialogProps) {
-  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState(accountName);
   const [balance, setBalance] = useState(String(accountBalance));
@@ -90,7 +89,7 @@ export function EditAccountNameDialog({
               });
 
               setOpen(false);
-              navigate(0);
+              revalidate();
             } catch (caughtError) {
               if (!(caughtError instanceof Error)) {
                 throw caughtError;

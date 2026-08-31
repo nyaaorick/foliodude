@@ -1,8 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { Plus } from 'lucide-react';
+import { revalidate } from '@/lib/data/store';
 import { createAssetsExpense } from '@/lib/actions/createAssetsExpense';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -26,7 +26,6 @@ export function CreateAssetExpenseDialog({
   accountId,
   accountCurrency,
 }: CreateAssetExpenseDialogProps) {
-  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -85,7 +84,7 @@ export function CreateAssetExpenseDialog({
               });
 
               setOpen(false);
-              navigate(0);
+              revalidate();
             } catch (submitError) {
               setError(
                 submitError instanceof Error

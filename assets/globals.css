@@ -133,7 +133,7 @@
     background:
       radial-gradient(circle at top, color-mix(in oklab, var(--accent) 38%, transparent) 0%, transparent 34%),
       linear-gradient(180deg, color-mix(in oklab, var(--background) 88%, white) 0%, var(--background) 100%);
-    @apply min-h-screen bg-background text-foreground;
+    @apply min-h-[100dvh] bg-background text-foreground;
   }
   html {
     @apply font-sans;

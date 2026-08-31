@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useTransition } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { revalidate } from '@/lib/data/store';
 import { AccountType, type AccountWithStats } from '@/lib/types/accounts';
 import { deleteAction } from '@/lib/actions/delete-actions';
 import type { RewardRateMap } from '@/lib/types/rewards';
@@ -34,7 +34,6 @@ const ACCOUNT_COLUMNS: Array<{
 ];
 
 export function AccountList({ accounts, rewardRates }: AccountListProps) {
-  const navigate = useNavigate();
   const [deletingAccountId, setDeletingAccountId] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   const [error, setError] = useState('');
@@ -52,7 +51,7 @@ export function AccountList({ accounts, rewardRates }: AccountListProps) {
         return;
       }
 
-      navigate(0);
+      revalidate();
     });
   };
 

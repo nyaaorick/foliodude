@@ -69,6 +69,9 @@ pwa/               PWA shell: index.html, main.tsx, manifest + icons
 components/app/    AppRoot — the router shell both targets mount
 components/        ui/ (primitives) and features/ (domain UI)
 pages/             route components
+lib/auth/          Google OAuth (PKCE, no client secret)
+lib/data/          revalidation bus + useLiveQuery (client-side data layer)
+lib/sync/          Drive snapshot sync, device identity, single-writer rule
 lib/db/            PGlite client, migrations, session, ledger + settings helpers
 lib/actions/       business logic — direct PGlite queries, no server
 lib/               types, utils, data, auth
@@ -82,14 +85,40 @@ file in `lib/actions/` runs directly against PGlite inside a transaction, with
 181 tests passing against a real in-memory database (not a mocked query
 builder). `npm run compile` is clean across the whole project.
 
-**Phase 3 (UI wiring) hasn't started** — the backend is fully functional and
-tested, but `pages/*.tsx` don't call it yet, so the app still shows Phase-2
-placeholder text ("will be available after PGLite integration") rather than
-real data. `app/` holds the pre-migration Next.js pages as a reference for
-what Phase 3 should reproduce; it doesn't build or ship. `components/features/*`
-still call the pre-migration server-action API shape and are excluded from
-typecheck until Phase 3 rewires them — see the annotated `exclude` block in
-[tsconfig.json](tsconfig.json).
+Phase 3 (UI) is done: `pages/*.tsx` read real data through `useLiveQuery`, and
+mutations call `revalidate()` instead of reloading the document. The typecheck
+quarantine is gone — `tsconfig.json` excludes only `node_modules` and `.output`.
+The legacy `app/` Next.js pages have been deleted now that `pages/` reproduces
+them.
+
+One responsive layout serves every target, breaking on viewport width alone:
+below `md` a bottom tab bar with safe-area insets and bottom-sheet dialogs (the
+Firefox sidebar and iOS portrait), at `md`+ a left rail. Clicking the extension's
+toolbar button opens the app in a full browser tab, where it renders as an
+ordinary desktop site. Charts are inline SVG rather than Recharts, which cut the
+dashboard chunk from 393 kB to 14 kB.
+
+Phase 4 (Google sign-in + Drive snapshot sync) is done. Sync is optional and
+off until you sign in; the app is fully usable signed-out. A snapshot of the
+ledger is stored in your own Google Drive `appDataFolder`, written directly from
+the client — there is no server. API keys are excluded from the snapshot.
+
+Sign-in needs a Google OAuth client id supplied at build time, and the two
+targets need different Google client *types*: set
+`VITE_GOOGLE_CLIENT_ID_EXTENSION` (Desktop app type) for the extension and
+`VITE_GOOGLE_CLIENT_ID_WEB` (Web application type) for the PWA. Without them the
+Sync page says so and everything else works. The iOS PWA sign-in flow has not
+been verified on real hardware yet.
+
+Because sync overwrites rather than merges, exactly one device is the writer;
+the others are read-only until promoted on the Sync page.
+
+FolioDude is pre-release, so nothing here is kept for backward compatibility:
+schema fixes are made in the migration that introduced them, legacy code is
+deleted rather than quarantined, and a stale development database is wiped
+rather than migrated. The working rules are in [PLAN.md](PLAN.md) §9 and, in
+operational form for coding agents, in
+[.claude/skills/foliodude-workflow/SKILL.md](.claude/skills/foliodude-workflow/SKILL.md).
 
 Full roadmap, open risks, and design rationale for each phase live in
 [PLAN.md](PLAN.md).

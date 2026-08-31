@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { createMemoryDb } from '@/lib/db/client';
-import { LATEST_SCHEMA_VERSION, runMigrations } from '@/lib/db/migrate';
+import { LATEST_SCHEMA_VERSION, MIGRATIONS, runMigrations } from '@/lib/db/migrate';
 
 describe('migrations', () => {
   it('applies every migration and records the version', async () => {
@@ -10,7 +10,10 @@ describe('migrations', () => {
     const applied = await db.query<{ id: number; name: string }>(
       'SELECT id, name FROM schema_version ORDER BY id',
     );
-    expect(applied.rows.map((row) => row.id)).toEqual([1, 2, 3]);
+    // Derived from the list rather than hard-coded, so appending a migration
+    // does not mean editing this assertion.
+    expect(applied.rows.map((row) => row.id)).toEqual(MIGRATIONS.map((m) => m.id));
+    expect(applied.rows.map((row) => row.name)).toEqual(MIGRATIONS.map((m) => m.name));
     expect(applied.rows.at(-1)?.id).toBe(LATEST_SCHEMA_VERSION);
   });
 

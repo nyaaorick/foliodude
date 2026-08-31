@@ -245,9 +245,24 @@ CREATE TABLE transactions (
   reward_currency          TEXT,
   metadata                 JSONB            NOT NULL DEFAULT '{}'::jsonb
                                             CHECK (jsonb_typeof(metadata) = 'object'),
-  reference_transaction_id UUID REFERENCES transactions(id) ON DELETE SET NULL,
-  from_account             UUID REFERENCES accounts(id) ON DELETE SET NULL,
-  to_account               UUID REFERENCES accounts(id) ON DELETE SET NULL,
+  -- NO ACTION (no ON DELETE clause), deliberately — do not "restore" SET NULL
+  -- here. It contradicts transactions_shape_check below, which requires each of
+  -- these columns NOT NULL for particular row shapes, so the cleanup it
+  -- promises is unreachable: reference_transaction_id for REWARD_EARN;
+  -- to_account for REWARD_EARN, REWARD_TRANSFER_IN, MILEAGE_TRANSFER_IN and
+  -- MILEAGE_MANUAL_IN; from_account for REWARD_REDEEM and
+  -- MILEAGE_REDEEM_FLIGHT. Deleting a parent raised a check violation naming a
+  -- constraint the caller never touched — and for EXPENSE.from_account, the one
+  -- case the shape check does not cover, SET NULL silently left an expense
+  -- attached to no account at all.
+  --
+  -- NO ACTION is checked at end of statement, so deleting a parent and its
+  -- dependants together in one statement still works, which is what
+  -- deleteAction's account path does. Deleting half a closure now fails with a
+  -- plain foreign-key error instead.
+  reference_transaction_id UUID REFERENCES transactions(id),
+  from_account             UUID REFERENCES accounts(id),
+  to_account               UUID REFERENCES accounts(id),
   category                 TEXT,
   memo                     TEXT,
   share_ticker             TEXT,

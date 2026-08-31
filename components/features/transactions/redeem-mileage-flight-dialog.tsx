@@ -1,8 +1,8 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { Plane } from 'lucide-react';
+import { revalidate } from '@/lib/data/store';
 import { redeemMileageFlight } from '@/lib/actions/mileage-actions';
 import { type AccountOption } from '@/lib/types/accounts';
 import { Button } from '@/components/ui/button';
@@ -46,7 +46,6 @@ export function RedeemMileageFlightDialog({
   mileageAccountId,
   taxAccounts,
 }: RedeemMileageFlightDialogProps) {
-  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [taxAccountId, setTaxAccountId] = useState(taxAccounts[0]?.id ?? '');
   const [dateValue, setDateValue] = useState(getTodayDateValue);
@@ -129,7 +128,7 @@ export function RedeemMileageFlightDialog({
             }
 
             setOpen(false);
-            navigate(0);
+            revalidate();
           }}
         >
           <div className="space-y-2">

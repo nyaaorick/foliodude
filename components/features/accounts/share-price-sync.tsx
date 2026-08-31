@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, useEffectEvent, useRef, useState, useTransition } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { RefreshCw } from 'lucide-react';
+import { revalidate } from '@/lib/data/store';
 import { refreshSharePrices } from '@/lib/actions/share-actions';
 import { Button } from '@/components/ui/button';
 
@@ -17,7 +17,6 @@ export function SharePriceSync({
   showButton = false,
   triggerLabel = 'Refresh Price',
 }: SharePriceSyncProps) {
-  const navigate = useNavigate();
   const [isPending, startTransition] = useTransition();
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
@@ -74,7 +73,7 @@ export function SharePriceSync({
       } catch {
         // ignore
       }
-      navigate(0);
+      revalidate();
     });
   };
 

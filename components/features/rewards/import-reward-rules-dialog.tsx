@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { revalidate } from '@/lib/data/store';
 import { importRewardRules } from '@/lib/actions/reward-actions';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -23,7 +23,6 @@ interface ImportRewardRulesDialogProps {
 export function ImportRewardRulesDialog({
   accountId,
 }: ImportRewardRulesDialogProps) {
-  const navigate = useNavigate();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [open, setOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -49,7 +48,7 @@ export function ImportRewardRulesDialog({
       });
 
       setOpen(false);
-      navigate(0);
+      revalidate();
     } catch (parseError) {
       if (!(parseError instanceof Error)) {
         throw parseError;
