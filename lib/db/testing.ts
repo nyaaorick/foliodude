@@ -3,15 +3,28 @@ import type { PGlite } from '@electric-sql/pglite';
 import { createMemoryDb } from './client';
 import type { SessionContext } from './session';
 
+// Booting a WASM Postgres and running migrations dominates test time, so each
+// test file boots one (vitest isolates modules per file) and every call hands
+// back that same database emptied.
+let shared: PGlite | null = null;
+
 /**
- * A fully migrated in-memory database.
+ * An empty, fully migrated in-memory database.
  *
  * Tests run against real Postgres rather than a mocked query builder, so the
  * CHECK constraints in 001_init actually execute — a malformed reward row fails
  * the test instead of being silently accepted by a mock.
  */
 export async function createTestContext(): Promise<SessionContext & { db: PGlite }> {
-  return { db: await createMemoryDb() };
+  shared ??= await createMemoryDb();
+  const tables = await shared.query<{ tablename: string }>(
+    `SELECT tablename FROM pg_tables
+     WHERE schemaname = 'public' AND tablename <> 'schema_version'`,
+  );
+  await shared.exec(
+    `TRUNCATE ${tables.rows.map((row) => row.tablename).join(', ')} RESTART IDENTITY CASCADE`,
+  );
+  return { db: shared };
 }
 
 type AccountSeed = {
