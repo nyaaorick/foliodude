@@ -120,15 +120,14 @@ function validateTransferRates(rates: MileageTransferRateMap): string | null {
 
 async function loadMileageAccount(
   db: Queryable,
-  userId: string,
   accountId: string,
   invalidTypeError: string,
 ): Promise<ActionResult<MileageAccountRow>> {
   try {
     const account = await one<MileageAccountRow>(
       db,
-      'SELECT id, name, type, balance, airline_program, transfer_rates FROM accounts WHERE id = $1 AND user_id = $2',
-      [accountId, userId],
+      'SELECT id, name, type, balance, airline_program, transfer_rates FROM accounts_flat WHERE id = $1',
+      [accountId],
       'Mileage account not found',
     );
     if (account.type !== AccountType.AIRLINE_MILES) {
@@ -143,22 +142,20 @@ async function loadMileageAccount(
 export async function updateMileageRate(
   input: UpdateMileageRateInput,
 ): Promise<ActionResult<UpdateMileageRateInput>> {
-  const { db, userId } = await getSessionContext();
+  const { db } = await getSessionContext();
   const parsed = parseInput(UpdateMileageRateSchema, input);
   if (!parsed.success) return parsed;
 
   const mileageAccount = await loadMileageAccount(
     db,
-    userId,
     parsed.data.accountId,
     'Mileage rates are only supported on airline mileage accounts',
   );
   if (!mileageAccount.success) return mileageAccount;
 
-  await db.query('UPDATE accounts SET usd_per_10k_miles = $1 WHERE id = $2 AND user_id = $3', [
+  await db.query('UPDATE mileage_details SET usd_per_10k_miles = $1 WHERE account_id = $2', [
     parsed.data.usdPer10kMiles,
     parsed.data.accountId,
-    userId,
   ]);
 
   return { success: true, data: parsed.data };
@@ -167,7 +164,7 @@ export async function updateMileageRate(
 export async function updateMileageTransferRates(
   input: UpdateMileageTransferRatesInput,
 ): Promise<ActionResult<UpdateMileageTransferRatesInput>> {
-  const { db, userId } = await getSessionContext();
+  const { db } = await getSessionContext();
   const parsed = parseInput(UpdateMileageTransferRatesSchema, input);
   if (!parsed.success) return parsed;
 
@@ -185,16 +182,14 @@ export async function updateMileageTransferRates(
 
   const mileageAccount = await loadMileageAccount(
     db,
-    userId,
     parsed.data.accountId,
     'Transfer rates are only supported on airline mileage accounts',
   );
   if (!mileageAccount.success) return mileageAccount;
 
-  await db.query('UPDATE accounts SET transfer_rates = $1::jsonb WHERE id = $2 AND user_id = $3', [
+  await db.query('UPDATE mileage_details SET transfer_rates = $1::jsonb WHERE account_id = $2', [
     JSON.stringify(transferRates),
     parsed.data.accountId,
-    userId,
   ]);
 
   return { success: true, data: { accountId: parsed.data.accountId, rates: transferRates } };
@@ -204,14 +199,13 @@ export async function updateMileageTransferRates(
 export async function createMileageManualIn(
   input: CreateMileageManualInInput,
 ): Promise<{ transaction: Transaction }> {
-  const { db, userId } = await getSessionContext();
+  const { db } = await getSessionContext();
   const parsed = parseInput(CreateMileageManualInSchema, input);
   if (!parsed.success) throw new Error(parsed.error);
 
   return db.transaction(async (tx) => {
     const mileageAccount = await loadMileageAccount(
       tx,
-      userId,
       parsed.data.accountId,
       'Manual mileage transfers are only supported on airline mileage accounts',
     );
@@ -223,11 +217,10 @@ export async function createMileageManualIn(
 
     const transaction = await one<Transaction>(
       tx,
-      `INSERT INTO transactions (user_id, type, amount, metadata, to_account, transaction_date)
-       VALUES ($1, $2, $3, $4::jsonb, $5, $6)
+      `INSERT INTO transactions (type, amount, metadata, to_account, transaction_date)
+       VALUES ($1, $2, $3::jsonb, $4, $5)
        RETURNING *`,
       [
-        userId,
         TransactionType.MILEAGE_MANUAL_IN,
         parsed.data.miles,
         JSON.stringify(metadata),
@@ -237,10 +230,9 @@ export async function createMileageManualIn(
       'Failed to create mileage transaction',
     );
 
-    await tx.query('UPDATE accounts SET balance = balance + $1 WHERE id = $2 AND user_id = $3', [
+    await tx.query('UPDATE accounts SET balance = balance + $1 WHERE id = $2', [
       parsed.data.miles,
       parsed.data.accountId,
-      userId,
     ]);
 
     return { transaction };
@@ -255,7 +247,7 @@ export async function createMileageManualIn(
 export async function transferRewardsToMileageAccount(
   input: TransferRewardsToMileageAccountInput,
 ): Promise<ActionResult<{ transaction: Transaction; transferredMiles: number }>> {
-  const { db, userId } = await getSessionContext();
+  const { db } = await getSessionContext();
   const parsed = parseInput(TransferRewardsToMileageAccountSchema, input);
   if (!parsed.success) return parsed;
 
@@ -263,7 +255,6 @@ export async function transferRewardsToMileageAccount(
     const normalizedMemo = parsed.data.memo?.trim() || null;
     const mileageAccount = await loadMileageAccount(
       tx,
-      userId,
       parsed.data.mileageAccountId,
       'Target account must be an airline mileage account',
     );
@@ -279,8 +270,8 @@ export async function transferRewardsToMileageAccount(
     const sourceIds = parsed.data.sources.map((source) => source.accountId);
     const sourceRows = await rows<SourceAccountRow>(
       tx,
-      'SELECT id, name, type, reward_currency, reward_balance FROM accounts WHERE user_id = $1 AND id = ANY($2)',
-      [userId, sourceIds],
+      'SELECT id, name, type, reward_currency, reward_balance FROM accounts_flat WHERE id = ANY($1)',
+      [sourceIds],
     );
     if (sourceRows.length !== sourceIds.length) {
       return { success: false, error: 'One or more source accounts were not found' };
@@ -342,11 +333,10 @@ export async function transferRewardsToMileageAccount(
 
     const mileageTransaction = await one<Transaction>(
       tx,
-      `INSERT INTO transactions (user_id, type, amount, metadata, to_account, memo, transaction_date)
-       VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
+      `INSERT INTO transactions (type, amount, metadata, to_account, memo, transaction_date)
+       VALUES ($1, $2, $3::jsonb, $4, $5, $6)
        RETURNING *`,
       [
-        userId,
         TransactionType.MILEAGE_TRANSFER_IN,
         transferredMiles,
         JSON.stringify(metadata),
@@ -358,17 +348,13 @@ export async function transferRewardsToMileageAccount(
     );
 
     for (const source of parsed.data.sources) {
-      const account = sourceLookup.get(source.accountId)!;
-      const nextRewardBalance = new Decimal(account.reward_balance ?? 0).minus(source.points).toNumber();
-
       await one(
         tx,
         `INSERT INTO transactions
-           (user_id, type, amount, reward_currency, reference_transaction_id, from_account, memo, transaction_date)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           (type, amount, reward_currency, reference_transaction_id, from_account, memo, transaction_date)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING id`,
         [
-          userId,
           TransactionType.REWARD_REDEEM,
           source.points,
           transferRewardCurrency,
@@ -380,17 +366,15 @@ export async function transferRewardsToMileageAccount(
         'Failed to record reward redemption',
       );
 
-      await tx.query('UPDATE accounts SET reward_balance = $1 WHERE id = $2 AND user_id = $3', [
-        nextRewardBalance,
-        source.accountId,
-        userId,
-      ]);
+      await tx.query(
+        'UPDATE liability_details SET reward_balance = reward_balance - $1 WHERE account_id = $2',
+        [source.points, source.accountId],
+      );
     }
 
-    await tx.query('UPDATE accounts SET balance = balance + $1 WHERE id = $2 AND user_id = $3', [
+    await tx.query('UPDATE accounts SET balance = balance + $1 WHERE id = $2', [
       transferredMiles,
       parsed.data.mileageAccountId,
-      userId,
     ]);
 
     return { success: true, data: { transaction: mileageTransaction, transferredMiles } };
@@ -406,14 +390,13 @@ export async function transferRewardsToMileageAccount(
 export async function redeemMileageFlight(
   input: RedeemMileageFlightInput,
 ): Promise<ActionResult<{ mileageTransaction: Transaction; expenseId: string }>> {
-  const { db, userId } = await getSessionContext();
+  const { db } = await getSessionContext();
   const parsed = parseInput(RedeemMileageFlightSchema, input);
   if (!parsed.success) return parsed;
 
   return db.transaction(async (tx) => {
     const mileageAccount = await loadMileageAccount(
       tx,
-      userId,
       parsed.data.mileageAccountId,
       'Selected account is not an airline mileage account',
     );
@@ -427,8 +410,8 @@ export async function redeemMileageFlight(
     try {
       taxAccount = await one<TaxAccountRow>(
         tx,
-        'SELECT id, name, type, currency FROM accounts WHERE id = $1 AND user_id = $2',
-        [parsed.data.taxAccountId, userId],
+        'SELECT id, name, type, currency FROM accounts WHERE id = $1',
+        [parsed.data.taxAccountId],
         'Tax payment account not found',
       );
     } catch (error) {
@@ -444,7 +427,7 @@ export async function redeemMileageFlight(
     const taxAmount = normalizeMoneyAmount(parsed.data.taxAmount);
     let expenseResult: Awaited<ReturnType<typeof createTransactionWithinTransaction>>;
     try {
-      expenseResult = await createTransactionWithinTransaction(tx, userId, {
+      expenseResult = await createTransactionWithinTransaction(tx, {
         accountId: parsed.data.taxAccountId,
         category: 'Travel',
         amount: taxAmount,
@@ -464,29 +447,28 @@ export async function redeemMileageFlight(
       tax_currency: parsed.data.taxCurrency,
       tax_account_id: taxAccount.id,
       tax_account_name_snapshot: taxAccount.name,
-      tax_expense_transaction_id: expenseResult.expense_id,
     };
 
     const mileageTransaction = await one<Transaction>(
       tx,
-      `INSERT INTO transactions (user_id, type, amount, metadata, from_account, transaction_date)
-       VALUES ($1, $2, $3, $4::jsonb, $5, $6)
+      `INSERT INTO transactions
+         (type, amount, metadata, from_account, reference_transaction_id, transaction_date)
+       VALUES ($1, $2, $3::jsonb, $4, $5, $6)
        RETURNING *`,
       [
-        userId,
         TransactionType.MILEAGE_REDEEM_FLIGHT,
         parsed.data.miles,
         JSON.stringify(metadata),
         parsed.data.mileageAccountId,
+        expenseResult.expense_id,
         parsed.data.date,
       ],
       'Failed to record mileage redemption',
     );
 
-    await tx.query('UPDATE accounts SET balance = balance - $1 WHERE id = $2 AND user_id = $3', [
+    await tx.query('UPDATE accounts SET balance = balance - $1 WHERE id = $2', [
       parsed.data.miles,
       parsed.data.mileageAccountId,
-      userId,
     ]);
 
     return {

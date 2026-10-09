@@ -27,28 +27,28 @@ export interface ApiKeyStatus {
  * Store a user-supplied API key on this device.
  *
  * Nothing ships with a key (PLAN.md §1); this is the only way one enters the
- * database. `local_settings.apikey:*` rows are excluded from the Phase 4
- * snapshot upload, so a key never leaves the device even once cloud sync exists.
+ * database. `device_secrets` is not part of the Phase 4 snapshot, so a key never
+ * leaves the device even once cloud sync exists.
  */
 export async function saveApiKey(input: z.infer<typeof SetApiKeySchema>): Promise<void> {
-  const { db, userId } = await getSessionContext();
+  const { db } = await getSessionContext();
   const parsed = SetApiKeySchema.parse(input);
-  await setApiKey(db, userId, parsed.provider, parsed.apiKey);
+  await setApiKey(db, parsed.provider, parsed.apiKey);
 }
 
 export async function removeApiKey(input: z.infer<typeof ProviderSchema>): Promise<void> {
-  const { db, userId } = await getSessionContext();
+  const { db } = await getSessionContext();
   const parsed = ProviderSchema.parse(input);
-  await clearApiKey(db, userId, parsed.provider);
+  await clearApiKey(db, parsed.provider);
 }
 
 /** For the settings screen: which providers are configured, key never returned in full. */
 export async function listApiKeyStatus(): Promise<ApiKeyStatus[]> {
-  const { db, userId } = await getSessionContext();
+  const { db } = await getSessionContext();
 
   return Promise.all(
     PROVIDERS.map(async (provider) => {
-      const apiKey = await getApiKey(db, userId, provider);
+      const apiKey = await getApiKey(db, provider);
       return {
         provider,
         configured: apiKey !== null,

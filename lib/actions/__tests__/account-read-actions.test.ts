@@ -27,7 +27,6 @@ describe('account-read-actions', () => {
       type: 'SHARE',
       name: 'AAPL',
       currency: 'USD',
-      brokerage: 'IBKR',
       ticker: 'AAPL',
       brokerage_account_id: brokerageId,
     });
@@ -58,10 +57,10 @@ describe('account-read-actions', () => {
     expect(asset?.available_credit).toBeNull();
   });
 
-  it('getAccountById throws on a miss, including cross-user rows', async () => {
-    const otherUserId = '00000000-0000-4000-8000-000000000999';
-    const id = await seedAccount(ctx, { user_id: otherUserId });
-    await expect(getAccountById(id)).rejects.toThrow('Account not found');
+  it('getAccountById throws on a miss', async () => {
+    await expect(getAccountById('00000000-0000-4000-8000-000000000999')).rejects.toThrow(
+      'Account not found',
+    );
   });
 
   it('loadAccountDetailCore returns null instead of throwing on a miss', async () => {
@@ -75,18 +74,18 @@ describe('account-read-actions', () => {
     expect(support.rewardRates).toBeDefined();
   });
 
-  it('loadAccountTransactions returns newest first and hides HIDDEN_MARKER memos', async () => {
+  it('loadAccountTransactions returns newest first and hides deleted rows', async () => {
     const accountId = await seedAccount(ctx, { type: 'ASSET', balance: 100 });
-    const insert = (date: string, memo: string | null) =>
+    const insert = (date: string, memo: string | null, deleted = false) =>
       ctx.db.query(
-        `INSERT INTO transactions (user_id, type, amount, currency, from_account, category, memo, transaction_date)
-         VALUES ($1, 'EXPENSE', 10, 'USD', $2, 'Other', $3, $4)`,
-        [ctx.userId, accountId, memo, date],
+        `INSERT INTO transactions (type, amount, currency, from_account, category, memo, transaction_date, deleted_at)
+         VALUES ('EXPENSE', 10, 'USD', $1, 'Other', $2, $3, CASE WHEN $4 THEN now() END)`,
+        [accountId, memo, date, deleted],
       );
 
     await insert('2026-01-01', 'visible old');
     await insert('2026-01-03', 'visible new');
-    await insert('2026-01-02', 'secret [HIDDEN] note');
+    await insert('2026-01-02', 'deleted note', true);
 
     const visible = await loadAccountTransactions(accountId);
     expect(visible.map((t) => t.memo)).toEqual(['visible new', 'visible old']);
@@ -99,16 +98,16 @@ describe('account-read-actions', () => {
       reward_rules: [{ category: 'Dining', multiplier: 4, rule_source: 'cloud' }],
     });
     const { rows } = await ctx.db.query<{ id: string }>(
-      `INSERT INTO transactions (user_id, type, amount, currency, from_account, category, transaction_date)
-       VALUES ($1, 'EXPENSE', 10, 'USD', $2, 'Dining', '2026-01-01') RETURNING id`,
-      [ctx.userId, accountId],
+      `INSERT INTO transactions (type, amount, currency, from_account, category, transaction_date)
+       VALUES ('EXPENSE', 10, 'USD', $1, 'Dining', '2026-01-01') RETURNING id`,
+      [accountId],
     );
     const expenseId = rows[0]!.id;
     await ctx.db.query(
       `INSERT INTO transactions
-         (user_id, type, amount, reward_currency, to_account, reference_transaction_id, category, transaction_date)
-       VALUES ($1, 'REWARD_EARN', 40, 'MR', $2, $3, 'Dining', '2026-01-01')`,
-      [ctx.userId, accountId, expenseId],
+         (type, amount, reward_currency, to_account, reference_transaction_id, category, transaction_date)
+       VALUES ('REWARD_EARN', 40, 'MR', $1, $2, 'Dining', '2026-01-01')`,
+      [accountId, expenseId],
     );
 
     const transactions = await loadAccountTransactions(accountId);

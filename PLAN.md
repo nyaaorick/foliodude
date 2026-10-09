@@ -193,15 +193,14 @@ over Google alone.
   against `files` with `spaces=appDataFolder`. Multipart create on first sync,
   plain media `PATCH` after. No upload server, no bucket. No client-side
   encryption (risk #9, accepted).
-- [x] **Logical snapshot, not `dumpDataDir()`.** `lib/db/backup.ts`, the module
-  003_local_settings.sql's SYNC NOTE anticipated. A raw data-directory dump
-  would carry the `apikey:` rows, which are device-local secrets that must never
-  leave the device (§7) — filtering them requires reading logically anyway, and
-  the result is far smaller and survives a Postgres page-layout change. Rows
-  travel via `row_to_json`/`jsonb_populate_recordset`, so enums, jsonb, dates,
-  and numerics round-trip through Postgres' own casts. Restore runs in one
-  transaction, re-keys rows onto this device's local `user_id`, preserves local
-  API keys, and re-advances the `transactions.seq` sequence. Covered by a
+- [x] **Logical snapshot, not `dumpDataDir()`.** `lib/db/backup.ts`. A raw
+  data-directory dump would carry `device_secrets`, the API keys that must never
+  leave the device (§7) — exporting an explicit table list keeps them out by
+  construction, and the result is far smaller and survives a Postgres page-layout
+  change. Rows travel via `row_to_json`/`jsonb_populate_recordset`, so enums,
+  jsonb, dates, and numerics round-trip through Postgres' own casts. Restore runs
+  in one transaction, leaves local API keys untouched, and re-advances the
+  `transactions.seq` sequence. Covered by a
   round-trip test that asserts the API key is absent from the uploaded payload.
 - [x] **Single-writer model, actually enforced.** `lib/sync/writer.ts` holds the
   designation; `lib/db/session.ts` wraps `db.transaction()` with
@@ -411,9 +410,8 @@ disabled-by-default *bring-your-own-key* setting stored in the local database.
 | **Stock / share prices** | Finnhub (`lib/utils/stock-price.ts`) | Throws a Settings-pointing error until a key is set | ✅ Key storage done. Manual price entry (§5 Phase 2) still pending |
 | **LLM receipt fallback** | Gemini 2.5 Flash Vision | Removed. §6 handles receipts fully on-device | Optional BYOK cloud fallback, only if the on-device pipeline misses §6.7 targets |
 
-Keys live in `local_settings` under `apikey:<provider>`, namespaced so the Phase 4
-snapshot upload can exclude them — a key is device-local and must never leave the
-device, even once cloud sync exists. `lib/utils/fx-rates.ts` and `stock-price.ts` are
+Keys live in the `device_secrets` table, which the Phase 4 snapshot never exports —
+a key is device-local and must never leave the device, even once cloud sync exists. `lib/utils/fx-rates.ts` and `stock-price.ts` are
 pure again: they take `apiKey: string | null` as a parameter and read no environment
 variable, so both are out of the `tsconfig.json` quarantine.
 

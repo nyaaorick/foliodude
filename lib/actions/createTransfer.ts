@@ -2,10 +2,11 @@ import { z } from 'zod';
 import Decimal from 'decimal.js';
 import { getSessionContext } from '@/lib/db/session';
 import { one, rows } from '@/lib/db/sql';
-import { normalizeMemo, updateAccount } from '@/lib/db/ledger';
+import { normalizeMemo, setBalance } from '@/lib/db/ledger';
 import { AccountType } from '@/lib/types/accounts';
 import { TransactionType, type Transaction } from '@/lib/types/transactions';
 import { normalizeMoneyAmount } from '@/lib/utils/financial-analytics';
+import { localToday } from '@/lib/utils/local-date';
 
 const CreateTransferSchema = z
   .object({
@@ -36,7 +37,7 @@ interface TransferAccount {
 export async function createTransfer(
   input: CreateTransferInput,
 ): Promise<{ transaction: Transaction }> {
-  const { db, userId } = await getSessionContext();
+  const { db } = await getSessionContext();
 
   const parsed = CreateTransferSchema.safeParse(input);
   if (!parsed.success) {
@@ -49,8 +50,8 @@ export async function createTransfer(
   return db.transaction(async (tx) => {
     const accounts = await rows<TransferAccount>(
       tx,
-      'SELECT id, type, currency, balance FROM accounts WHERE user_id = $1 AND id = ANY($2)',
-      [userId, [fromAccountId, toAccountId]],
+      'SELECT id, type, currency, balance FROM accounts WHERE id = ANY($1)',
+      [[fromAccountId, toAccountId]],
     );
     const fromAccount = accounts.find((account) => account.id === fromAccountId);
     const toAccount = accounts.find((account) => account.id === toAccountId);
@@ -86,17 +87,14 @@ export async function createTransfer(
       : {};
 
     // No user-supplied date field here (unlike createTransaction et al.) — a
-    // transfer is always dated today. CURRENT_DATE is a SQL literal, not a bound
-    // parameter, so this stays on the connection's pinned UTC date rather than
-    // going through `new Date()` and reintroducing host-timezone drift.
+    // transfer is always dated today, on the device's calendar.
     const transaction = await one<Transaction>(
       tx,
       `INSERT INTO transactions
-         (user_id, type, amount, currency, metadata, from_account, to_account, memo, transaction_date)
-       VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, CURRENT_DATE)
+         (type, amount, currency, metadata, from_account, to_account, memo, transaction_date)
+       VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8)
        RETURNING *`,
       [
-        userId,
         TransactionType.TRANSFER,
         amountValue.toNumber(),
         fromAccount.currency,
@@ -104,16 +102,13 @@ export async function createTransfer(
         fromAccountId,
         toAccountId,
         normalizeMemo(memo),
+        localToday(),
       ],
       'Failed to create transfer transaction',
     );
 
-    await updateAccount(tx, userId, fromAccountId, {
-      balance: new Decimal(fromAccount.balance).minus(amountValue).toNumber(),
-    });
-    await updateAccount(tx, userId, toAccountId, {
-      balance: new Decimal(toAccount.balance).plus(targetAmountValue).toNumber(),
-    });
+    await setBalance(tx, fromAccountId, new Decimal(fromAccount.balance).minus(amountValue).toNumber());
+    await setBalance(tx, toAccountId, new Decimal(toAccount.balance).plus(targetAmountValue).toNumber());
 
     return { transaction };
   });

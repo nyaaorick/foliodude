@@ -230,7 +230,6 @@ export function CreateTransferDialog({
 
       const quantity = Number(form.get('quantity') || '0');
       const price = Number(form.get('sharePrice') || '0');
-      const fee = Number(form.get('fee') || '0');
 
       if (!Number.isFinite(quantity) || quantity <= 0) {
         setError('Quantity must be greater than 0');
@@ -239,11 +238,6 @@ export function CreateTransferDialog({
 
       if (!Number.isFinite(price) || price <= 0) {
         setError('Price must be greater than 0');
-        return;
-      }
-
-      if (!Number.isFinite(fee) || fee < 0) {
-        setError('Fee must be 0 or greater');
         return;
       }
 
@@ -256,7 +250,6 @@ export function CreateTransferDialog({
               brokerageAccountId: linkedBrokerageAccount.id,
               quantity,
               price,
-              fee,
               memo: memo || undefined,
             })
           : await sellShare({
@@ -264,7 +257,6 @@ export function CreateTransferDialog({
               brokerageAccountId: linkedBrokerageAccount.id,
               quantity,
               price,
-              fee,
               memo: memo || undefined,
             });
 
@@ -401,19 +393,6 @@ export function CreateTransferDialog({
                   step="0.0001"
                   required
                   placeholder="0.0000"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="fee">Fee</Label>
-                <Input
-                  id="fee"
-                  name="fee"
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  defaultValue="0"
-                  required
                 />
               </div>
             </>

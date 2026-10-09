@@ -64,11 +64,6 @@ export interface MileageRedeemFlightMetadata {
   tax_currency: string;
   tax_account_id: string;
   tax_account_name_snapshot: string;
-  tax_expense_transaction_id: string;
-}
-
-export function isAirlineProgram(value: string): value is AirlineProgram {
-  return AIRLINE_PROGRAMS.some((program) => program.id === value);
 }
 
 export function getAirlineProgramDefinition(

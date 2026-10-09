@@ -63,7 +63,6 @@ export function CreateAccountDialog({ accounts }: CreateAccountDialogProps) {
   const [brokerageAccountId, setBrokerageAccountId] = useState('');
   const [initialShares, setInitialShares] = useState('0');
   const [initialPrice, setInitialPrice] = useState('');
-  const [initialFee, setInitialFee] = useState('0');
   const [deductFromBrokerage, setDeductFromBrokerage] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -111,7 +110,6 @@ export function CreateAccountDialog({ accounts }: CreateAccountDialogProps) {
     setBrokerageAccountId('');
     setInitialShares('0');
     setInitialPrice('');
-    setInitialFee('0');
     setDeductFromBrokerage(false);
     setError('');
   };
@@ -158,8 +156,6 @@ export function CreateAccountDialog({ accounts }: CreateAccountDialogProps) {
           type === AccountType.SHARE && initialPrice !== ''
             ? Number(initialPrice)
             : undefined,
-        initial_fee:
-          type === AccountType.SHARE ? Number(initialFee || 0) : undefined,
         deduct_from_brokerage:
           type === AccountType.SHARE ? deductFromBrokerage : undefined,
       });
@@ -298,19 +294,6 @@ export function CreateAccountDialog({ accounts }: CreateAccountDialogProps) {
                   value={initialPrice}
                   onChange={(event) => setInitialPrice(event.target.value)}
                   placeholder="Required when initial shares > 0"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="initial-fee">Fee</Label>
-                <Input
-                  id="initial-fee"
-                  name="initial_fee"
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={initialFee}
-                  onChange={(event) => setInitialFee(event.target.value)}
                 />
               </div>
 

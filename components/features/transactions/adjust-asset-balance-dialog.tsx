@@ -16,6 +16,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog';
+import { localToday } from '@/lib/utils/local-date';
 
 interface AdjustAssetBalanceDialogProps {
   accountId: string;
@@ -116,7 +117,7 @@ export function AdjustAssetBalanceDialog({
               name="date"
               type="date"
               required
-              defaultValue={new Date().toISOString().split('T')[0]}
+              defaultValue={localToday()}
             />
           </div>
 

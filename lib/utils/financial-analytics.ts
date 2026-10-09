@@ -51,10 +51,6 @@ export function roundSharesDecimal(value: Decimal.Value) {
   return new Decimal(value).toDecimalPlaces(6, Decimal.ROUND_HALF_UP);
 }
 
-export function roundSharesNumber(value: Decimal.Value) {
-  return roundSharesDecimal(value).toNumber();
-}
-
 function roundUsd(value: Decimal.Value) {
   return roundMoneyNumber(value);
 }
@@ -66,10 +62,10 @@ function getFxRate(currency: string, fxRates: Record<string, number>) {
 export function mapAccountRowToAccount(row: AccountRow): Account {
   return {
     id: row.id,
-    user_id: row.user_id,
     name: row.name,
     type: row.type as AccountType,
     balance: row.balance,
+    apy: row.apy ?? null,
     credit_limit: row.credit_limit,
     reward_currency: isRewardCurrencyId(row.reward_currency ?? '')
       ? (row.reward_currency as Account['reward_currency'])
@@ -79,7 +75,6 @@ export function mapAccountRowToAccount(row: AccountRow): Account {
     usd_per_10k_miles: row.usd_per_10k_miles ?? 0,
     transfer_rates: normalizeMileageTransferRates(row.transfer_rates),
     currency: row.currency as Account['currency'],
-    brokerage: row.brokerage ?? null,
     ticker: row.ticker ?? null,
     brokerage_account_id: row.brokerage_account_id ?? null,
     shares: row.shares ?? 0,
@@ -88,7 +83,6 @@ export function mapAccountRowToAccount(row: AccountRow): Account {
     last_price_date: row.last_price_date ?? null,
     reward_rules: ((row.reward_rules ?? []) as unknown) as Account['reward_rules'],
     spend_stats: ((row.spend_stats ?? {}) as unknown) as Account['spend_stats'],
-    auto_pay_config: row.auto_pay_config,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };

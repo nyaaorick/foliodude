@@ -1,17 +1,15 @@
 import type { PGlite } from '@electric-sql/pglite';
 
 import init001 from './migrations/001_init.sql?raw';
-import init002 from './migrations/002_net_worth_snapshots.sql?raw';
-import init003 from './migrations/003_local_settings.sql?raw';
 
 /**
- * Ordered migration list. Append only — never edit or reorder an entry that has
- * shipped, because `schema_version` records what already ran by `id`.
+ * Ordered migration list. Pre-release, 001_init is the schema's source and is
+ * edited in place. Once a build ships, this becomes append only — never edit or
+ * reorder an entry that has shipped, because `schema_version` records what
+ * already ran by `id`.
  */
 export const MIGRATIONS: ReadonlyArray<{ id: number; name: string; sql: string }> = [
   { id: 1, name: '001_init', sql: init001 },
-  { id: 2, name: '002_net_worth_snapshots', sql: init002 },
-  { id: 3, name: '003_local_settings', sql: init003 },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.id;

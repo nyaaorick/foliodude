@@ -109,12 +109,11 @@ describe('createAccount', () => {
       brokerage_account_id: brokerageId as never,
       initial_shares: 2,
       initial_price: 100,
-      initial_fee: 1,
       deduct_from_brokerage: true,
     });
 
-    expect(account).toMatchObject({ shares: 2, cost_basis: 201, balance: 200 });
-    expect((await getAccount(ctx.db, brokerageId)).balance).toBe(799); // 1000 - (2*100 + 1)
+    expect(account).toMatchObject({ shares: 2, cost_basis: 200, balance: 200 });
+    expect((await getAccount(ctx.db, brokerageId)).balance).toBe(800); // 1000 - 2*100
   });
 
   it('rolls back account creation entirely when the initial buy fails insufficient-funds', async () => {

@@ -36,7 +36,7 @@ vi.mock('@/lib/actions/account-read-actions', () => ({
 }));
 
 vi.mock('@/lib/db/session', () => ({
-  getSessionContext: vi.fn().mockResolvedValue({ db: {}, userId: 'user-1' }),
+  getSessionContext: vi.fn().mockResolvedValue({ db: {} }),
 }));
 
 vi.mock('@/lib/db/settings', () => ({
@@ -85,7 +85,6 @@ describe('createByIntent AI flows', () => {
     mockGetAccounts.mockResolvedValue([
       {
         id: ASSET_ACCOUNT_ID,
-        user_id: 'user-1',
         name: 'BoA Checking',
         type: AccountType.ASSET,
         balance: 2500,
@@ -96,7 +95,6 @@ describe('createByIntent AI flows', () => {
         usd_per_10k_miles: 0,
         transfer_rates: {},
         currency: 'USD',
-        brokerage: null,
         ticker: null,
         brokerage_account_id: null,
         shares: 0,
@@ -105,14 +103,12 @@ describe('createByIntent AI flows', () => {
         last_price_date: null,
         reward_rules: [],
         spend_stats: {},
-        auto_pay_config: null,
         created_at: '2026-03-21T00:00:00.000Z',
         updated_at: '2026-03-21T00:00:00.000Z',
         available_credit: null,
       },
       {
         id: LIABILITY_ACCOUNT_ID,
-        user_id: 'user-1',
         name: 'Amex Gold',
         type: AccountType.LIABILITY,
         balance: -320,
@@ -123,7 +119,6 @@ describe('createByIntent AI flows', () => {
         usd_per_10k_miles: 0,
         transfer_rates: {},
         currency: 'USD',
-        brokerage: null,
         ticker: null,
         brokerage_account_id: null,
         shares: 0,
@@ -132,7 +127,6 @@ describe('createByIntent AI flows', () => {
         last_price_date: null,
         reward_rules: [],
         spend_stats: {},
-        auto_pay_config: null,
         created_at: '2026-03-21T00:00:00.000Z',
         updated_at: '2026-03-21T00:00:00.000Z',
         available_credit: 9680,

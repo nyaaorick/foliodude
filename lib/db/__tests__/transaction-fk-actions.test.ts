@@ -3,8 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { createTestContext, seedAccount } from '@/lib/db/testing';
 
 /**
- * 004 replaced `ON DELETE SET NULL` on the transaction foreign keys with the
- * NO ACTION default. These assert the two behaviours that motivated it: a
+ * The transaction foreign keys use NO ACTION rather than `ON DELETE SET NULL`.
+ * These assert the two behaviours that motivated it: a
  * partial delete is refused with a referential error rather than a confusing
  * `transactions_shape_check` violation, and a whole closure still deletes.
  */
@@ -16,14 +16,14 @@ describe('transaction foreign key actions', () => {
     });
 
     const expense = await ctx.db.query<{ id: string }>(
-      `INSERT INTO transactions (user_id, type, amount, currency, from_account, transaction_date)
-       VALUES ($1,'EXPENSE',25,'USD',$2,'2026-08-01') RETURNING id`,
-      [ctx.userId, card],
+      `INSERT INTO transactions (type, amount, currency, from_account, transaction_date)
+       VALUES ('EXPENSE',25,'USD',$1,'2026-08-01') RETURNING id`,
+      [card],
     );
     await ctx.db.query(
-      `INSERT INTO transactions (user_id, type, amount, reward_currency, to_account, transaction_date, reference_transaction_id)
-       VALUES ($1,'REWARD_EARN',50,'MR',$2,'2026-08-01',$3)`,
-      [ctx.userId, card, expense.rows[0]!.id],
+      `INSERT INTO transactions (type, amount, reward_currency, to_account, transaction_date, reference_transaction_id)
+       VALUES ('REWARD_EARN',50,'MR',$1,'2026-08-01',$2)`,
+      [card, expense.rows[0]!.id],
     );
 
     // Was: "violates check constraint transactions_shape_check" — a constraint
@@ -39,9 +39,7 @@ describe('transaction foreign key actions', () => {
 
     // Deleting the whole closure in one statement still works — the check is
     // end-of-statement, which is what deleteAction's account path relies on.
-    await ctx.db.query(
-      `DELETE FROM transactions WHERE user_id = $1`, [ctx.userId],
-    );
+    await ctx.db.query('DELETE FROM transactions');
     await ctx.db.query('DELETE FROM accounts WHERE id = $1', [card]);
 
     const left = await ctx.db.query('SELECT 1 FROM accounts');

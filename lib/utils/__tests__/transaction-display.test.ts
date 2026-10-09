@@ -16,7 +16,6 @@ function makeTransaction(
 ): TransactionWithReward {
   return {
     id: 'tx-1',
-    user_id: 'user-1',
     type: TransactionType.TRANSFER,
     amount: 50,
     currency: 'USD',
@@ -30,7 +29,6 @@ function makeTransaction(
     share_ticker: null,
     share_quantity: null,
     share_price: null,
-    fee: null,
     transaction_date: '2026-03-16T00:00:00.000Z',
     created_at: '2026-03-16T00:00:00.000Z',
     ...overrides,

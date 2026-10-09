@@ -40,7 +40,6 @@ export type TransactionMetadata =
 
 export interface Transaction {
   id: string;
-  user_id: string;
   type: TransactionType;
   amount: number;
   currency: string | null;
@@ -54,7 +53,6 @@ export interface Transaction {
   share_ticker: string | null;
   share_quantity: number | null;
   share_price: number | null;
-  fee: number | null;
   transaction_date: string;
   created_at: string;
 }

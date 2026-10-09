@@ -31,7 +31,6 @@ describe('share actions', () => {
     const shareId = await seedAccount(ctx, {
       type: 'SHARE',
       currency: 'USD',
-      brokerage: 'IBKR',
       ticker: 'AAPL',
       brokerage_account_id: brokerageId,
     });
@@ -46,18 +45,17 @@ describe('share actions', () => {
       brokerageAccountId: brokerageId,
       quantity: 10,
       price: 150,
-      fee: 1,
     });
 
     expect(result.success).toBe(true);
     if (!result.success) throw new Error('unreachable');
-    expect(result.data.transaction).toMatchObject({ type: 'SHARE_BUY', amount: 1501 });
+    expect(result.data.transaction).toMatchObject({ type: 'SHARE_BUY', amount: 1500 });
 
     const brokerage = await getAccount(ctx.db, brokerageId);
-    expect(brokerage.balance).toBe(8499); // 10000 - (10*150 + 1)
+    expect(brokerage.balance).toBe(8500); // 10000 - 10*150
 
     const share = await getAccount(ctx.db, shareId);
-    expect(share).toMatchObject({ shares: 10, cost_basis: 1501, last_price: 150, balance: 1500 });
+    expect(share).toMatchObject({ shares: 10, cost_basis: 1500, last_price: 150, balance: 1500 });
     expect(share.last_price_date).toBeTruthy();
   });
 
@@ -69,7 +67,6 @@ describe('share actions', () => {
       brokerageAccountId: brokerageId,
       quantity: 1000,
       price: 150,
-      fee: 0,
     });
 
     expect(result).toEqual({ success: false, error: 'Insufficient cash balance' });
@@ -80,38 +77,36 @@ describe('share actions', () => {
 
   it('records a sell and clears the position when all shares are sold', async () => {
     const { brokerageId, shareId } = await seedShareSetup();
-    await buyShare({ shareAccountId: shareId, brokerageAccountId: brokerageId, quantity: 10, price: 150, fee: 1 });
+    await buyShare({ shareAccountId: shareId, brokerageAccountId: brokerageId, quantity: 10, price: 150 });
 
     const result = await sellShare({
       shareAccountId: shareId,
       brokerageAccountId: brokerageId,
       quantity: 10,
       price: 160,
-      fee: 2,
     });
 
     expect(result.success).toBe(true);
     if (!result.success) throw new Error('unreachable');
-    expect(result.data.transaction).toMatchObject({ type: 'SHARE_SELL', amount: 1598 });
+    expect(result.data.transaction).toMatchObject({ type: 'SHARE_SELL', amount: 1600 });
 
     const share = await getAccount(ctx.db, shareId);
     // Position fully closed: cost basis and mark-to-market balance both zero.
     expect(share).toMatchObject({ shares: 0, cost_basis: 0, balance: 0 });
 
     const brokerage = await getAccount(ctx.db, brokerageId);
-    expect(brokerage.balance).toBe(8499 + 1598);
+    expect(brokerage.balance).toBe(8500 + 1600);
   });
 
   it('rejects selling more shares than are held', async () => {
     const { brokerageId, shareId } = await seedShareSetup();
-    await buyShare({ shareAccountId: shareId, brokerageAccountId: brokerageId, quantity: 5, price: 100, fee: 0 });
+    await buyShare({ shareAccountId: shareId, brokerageAccountId: brokerageId, quantity: 5, price: 100 });
 
     const result = await sellShare({
       shareAccountId: shareId,
       brokerageAccountId: brokerageId,
       quantity: 10,
       price: 100,
-      fee: 0,
     });
 
     expect(result).toEqual({ success: false, error: 'Insufficient shares' });
@@ -143,7 +138,6 @@ describe('share actions', () => {
     await seedAccount(ctx, {
       type: 'SHARE',
       currency: 'USD',
-      brokerage: 'IBKR',
       ticker: 'MSFT',
       brokerage_account_id: brokerageId,
     });
@@ -169,7 +163,7 @@ describe('share actions', () => {
 
   it('setSharePrice lets the user override the last fetched price', async () => {
     const { shareId, brokerageId } = await seedShareSetup();
-    await buyShare({ shareAccountId: shareId, brokerageAccountId: brokerageId, quantity: 10, price: 150, fee: 0 });
+    await buyShare({ shareAccountId: shareId, brokerageAccountId: brokerageId, quantity: 10, price: 150 });
 
     const result = await setSharePrice({ accountId: shareId, price: 142.5 });
 

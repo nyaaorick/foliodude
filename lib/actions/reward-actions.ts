@@ -60,13 +60,12 @@ interface RewardAccountRow {
 
 async function requireRewardAccount(
   db: Queryable,
-  userId: string,
   accountId: string,
 ): Promise<RewardAccountRow> {
   const account = await one<RewardAccountRow>(
     db,
-    'SELECT id, type, reward_currency, reward_balance, reward_rules FROM accounts WHERE id = $1 AND user_id = $2',
-    [accountId, userId],
+    'SELECT id, type, reward_currency, reward_balance, reward_rules FROM accounts_flat WHERE id = $1',
+    [accountId],
     'Account not found',
   );
   if (account.type !== 'LIABILITY') {
@@ -84,25 +83,22 @@ function requireRewardCurrency(account: RewardAccountRow): RewardCurrencyId {
 
 async function replaceRewardRulesForAccount(
   db: Queryable,
-  userId: string,
   accountId: string,
   rules: RewardRule[],
 ): Promise<RewardRule[]> {
-  await requireRewardAccount(db, userId, accountId);
-  await db.query('UPDATE accounts SET reward_rules = $1::jsonb WHERE id = $2 AND user_id = $3', [
+  await requireRewardAccount(db, accountId);
+  await db.query('UPDATE liability_details SET reward_rules = $1::jsonb WHERE account_id = $2', [
     JSON.stringify(rules),
     accountId,
-    userId,
   ]);
   return rules;
 }
 
 export async function getRewardRates(): Promise<RewardRateMap> {
-  const { db, userId } = await getSessionContext();
+  const { db } = await getSessionContext();
   const rateRows = await rows<RewardRateRow>(
     db,
-    'SELECT user_id, reward_currency, usd_per_10k_points, updated_at FROM reward_rates WHERE user_id = $1',
-    [userId],
+    'SELECT reward_currency, usd_per_10k_points, updated_at FROM reward_rates',
   );
   return buildRewardRateMapStrict(rateRows);
 }
@@ -110,14 +106,14 @@ export async function getRewardRates(): Promise<RewardRateMap> {
 export async function updateRewardRate(
   input: z.infer<typeof UpdateRewardRateSchema>,
 ): Promise<{ rewardCurrency: RewardCurrencyId; usdPer10kPoints: number }> {
-  const { db, userId } = await getSessionContext();
+  const { db } = await getSessionContext();
   const normalizedInput = UpdateRewardRateSchema.parse(input);
 
   await db.query(
-    `INSERT INTO reward_rates (user_id, reward_currency, usd_per_10k_points)
-     VALUES ($1, $2, $3)
-     ON CONFLICT (user_id, reward_currency) DO UPDATE SET usd_per_10k_points = EXCLUDED.usd_per_10k_points`,
-    [userId, normalizedInput.rewardCurrency, normalizedInput.usdPer10kPoints],
+    `INSERT INTO reward_rates (reward_currency, usd_per_10k_points)
+     VALUES ($1, $2)
+     ON CONFLICT (reward_currency) DO UPDATE SET usd_per_10k_points = EXCLUDED.usd_per_10k_points`,
+    [normalizedInput.rewardCurrency, normalizedInput.usdPer10kPoints],
   );
 
   return normalizedInput;
@@ -127,11 +123,11 @@ export async function updateRewardRate(
 export async function createRewardTransaction(
   input: z.infer<typeof RewardTransactionSchema>,
 ): Promise<{ transaction: Transaction }> {
-  const { db, userId } = await getSessionContext();
+  const { db } = await getSessionContext();
   const normalizedInput = RewardTransactionSchema.parse(input);
 
   return db.transaction(async (tx) => {
-    const account = await requireRewardAccount(tx, userId, normalizedInput.accountId);
+    const account = await requireRewardAccount(tx, normalizedInput.accountId);
     const rewardCurrency = requireRewardCurrency(account);
     const currentBalance = new Decimal(account.reward_balance);
     const amount = new Decimal(normalizedInput.amount);
@@ -150,11 +146,10 @@ export async function createRewardTransaction(
     const transaction = await one<Transaction>(
       tx,
       `INSERT INTO transactions
-         (user_id, type, amount, reward_currency, metadata, from_account, to_account, memo, transaction_date)
-       VALUES ($1, $2, $3, $4, '{}'::jsonb, $5, $6, $7, $8)
+         (type, amount, reward_currency, metadata, from_account, to_account, memo, transaction_date)
+       VALUES ($1, $2, $3, '{}'::jsonb, $4, $5, $6, $7)
        RETURNING *`,
       [
-        userId,
         normalizedInput.type,
         normalizedInput.amount,
         rewardCurrency,
@@ -166,10 +161,9 @@ export async function createRewardTransaction(
       'Failed to create reward transaction',
     );
 
-    await tx.query('UPDATE accounts SET reward_balance = $1 WHERE id = $2 AND user_id = $3', [
+    await tx.query('UPDATE liability_details SET reward_balance = $1 WHERE account_id = $2', [
       nextRewardBalance,
       normalizedInput.accountId,
-      userId,
     ]);
 
     return { transaction };
@@ -180,11 +174,11 @@ export type UpdateRewardRuleInput = z.infer<typeof UpdateRewardRuleSchema>;
 
 /** Upsert one category's multiplier rule by category name (case-sensitive match). */
 export async function updateRewardRule(input: UpdateRewardRuleInput): Promise<RewardRule> {
-  const { db, userId } = await getSessionContext();
+  const { db } = await getSessionContext();
   const normalizedInput = UpdateRewardRuleSchema.parse(input);
 
   return db.transaction(async (tx) => {
-    const account = await requireRewardAccount(tx, userId, normalizedInput.accountId);
+    const account = await requireRewardAccount(tx, normalizedInput.accountId);
     const rules = account.reward_rules ?? [];
 
     const newRule: RewardRule = {
@@ -203,10 +197,9 @@ export async function updateRewardRule(input: UpdateRewardRuleInput): Promise<Re
         ? rules.map((rule, index) => (index === existingRuleIdx ? newRule : rule))
         : [...rules, newRule];
 
-    await tx.query('UPDATE accounts SET reward_rules = $1::jsonb WHERE id = $2 AND user_id = $3', [
+    await tx.query('UPDATE liability_details SET reward_rules = $1::jsonb WHERE account_id = $2', [
       JSON.stringify(updatedRules),
       normalizedInput.accountId,
-      userId,
     ]);
 
     return newRule;
@@ -216,22 +209,22 @@ export async function updateRewardRule(input: UpdateRewardRuleInput): Promise<Re
 export async function importRewardRules(
   input: z.infer<typeof ReplaceRewardRulesSchema>,
 ): Promise<RewardRuleSet> {
-  const { db, userId } = await getSessionContext();
+  const { db } = await getSessionContext();
   const parsed = ReplaceRewardRulesSchema.parse(input);
   const ruleSet = normalizeRewardRuleSet(parseRewardRuleSet(parsed.ruleSet), 'imported');
-  await replaceRewardRulesForAccount(db, userId, parsed.accountId, ruleSet.rules);
+  await replaceRewardRulesForAccount(db, parsed.accountId, ruleSet.rules);
   return ruleSet;
 }
 
 export async function applyCloudRewardRules(
   input: z.infer<typeof ApplyCloudRewardRulesSchema>,
 ): Promise<RewardRuleSet> {
-  const { db, userId } = await getSessionContext();
+  const { db } = await getSessionContext();
   const parsed = ApplyCloudRewardRulesSchema.parse(input);
   const ruleSet = getCloudRewardRuleSet(parsed.ruleSetId);
   if (!ruleSet) {
     throw new Error('Cloud reward rule set not found');
   }
-  await replaceRewardRulesForAccount(db, userId, parsed.accountId, ruleSet.rules);
+  await replaceRewardRulesForAccount(db, parsed.accountId, ruleSet.rules);
   return ruleSet;
 }

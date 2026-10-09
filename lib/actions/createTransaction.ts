@@ -52,7 +52,6 @@ interface AccountRow {
  */
 export async function createTransactionWithinTransaction(
   db: Queryable,
-  userId: string,
   input: CreateExpenseInput,
 ): Promise<CreateExpenseResult> {
   const parsed = CreateExpenseSchema.safeParse(input);
@@ -71,9 +70,9 @@ export async function createTransactionWithinTransaction(
   const account = await one<AccountRow>(
     db,
     `SELECT balance, currency, reward_currency, reward_balance, reward_rules, spend_stats
-       FROM accounts
-      WHERE id = $1 AND user_id = $2`,
-    [accountId, userId],
+       FROM accounts_flat
+      WHERE id = $1`,
+    [accountId],
     'Account not found',
   );
 
@@ -106,12 +105,11 @@ export async function createTransactionWithinTransaction(
   const expense = await one<{ id: string }>(
     db,
     `INSERT INTO transactions
-       (user_id, type, amount, currency, reward_currency, metadata,
+       (type, amount, currency, reward_currency, metadata,
         reference_transaction_id, from_account, to_account, category, memo, transaction_date)
-     VALUES ($1, $2, $3, $4, NULL, '{}'::jsonb, NULL, $5, NULL, $6, $7, $8)
+     VALUES ($1, $2, $3, NULL, '{}'::jsonb, NULL, $4, NULL, $5, $6, $7)
      RETURNING id`,
     [
-      userId,
       TransactionType.EXPENSE,
       amount,
       account.currency,
@@ -123,11 +121,7 @@ export async function createTransactionWithinTransaction(
     'Failed to create expense transaction',
   );
 
-  await db.query('UPDATE accounts SET balance = $1 WHERE id = $2 AND user_id = $3', [
-    nextBalance,
-    accountId,
-    userId,
-  ]);
+  await db.query('UPDATE accounts SET balance = $1 WHERE id = $2', [nextBalance, accountId]);
 
   let rewardId: string | null = null;
 
@@ -135,12 +129,11 @@ export async function createTransactionWithinTransaction(
     const reward = await one<{ id: string }>(
       db,
       `INSERT INTO transactions
-         (user_id, type, amount, currency, reward_currency, metadata,
+         (type, amount, currency, reward_currency, metadata,
           reference_transaction_id, from_account, to_account, category, memo, transaction_date)
-       VALUES ($1, $2, $3, NULL, $4, '{}'::jsonb, $5, NULL, $6, $7, $8, $9)
+       VALUES ($1, $2, NULL, $3, '{}'::jsonb, $4, NULL, $5, $6, $7, $8)
        RETURNING id`,
       [
-        userId,
         TransactionType.REWARD_EARN,
         rewardResult.points,
         rewardCurrency,
@@ -156,8 +149,8 @@ export async function createTransactionWithinTransaction(
     rewardId = reward.id;
 
     await db.query(
-      `UPDATE accounts SET reward_balance = $1, spend_stats = $2 WHERE id = $3 AND user_id = $4`,
-      [updatedRewardBalance, JSON.stringify(updatedStats), accountId, userId],
+      `UPDATE liability_details SET reward_balance = $1, spend_stats = $2 WHERE account_id = $3`,
+      [updatedRewardBalance, JSON.stringify(updatedStats), accountId],
     );
   }
 
@@ -181,6 +174,6 @@ export async function createTransactionWithinTransaction(
 export async function createTransaction(
   input: CreateExpenseInput,
 ): Promise<CreateExpenseResult> {
-  const { db, userId } = await getSessionContext();
-  return db.transaction((tx) => createTransactionWithinTransaction(tx, userId, input));
+  const { db } = await getSessionContext();
+  return db.transaction((tx) => createTransactionWithinTransaction(tx, input));
 }

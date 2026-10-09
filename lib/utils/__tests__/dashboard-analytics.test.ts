@@ -12,10 +12,10 @@ import type { RewardRateMap } from '@/lib/types/rewards';
 function makeAccount(overrides: Partial<Account>): Account {
   return {
     id: 'account-1',
-    user_id: 'user-1',
     name: 'Account',
     type: AccountType.ASSET,
     balance: 0,
+    apy: null,
     credit_limit: null,
     reward_currency: null,
     reward_balance: 0,
@@ -23,7 +23,6 @@ function makeAccount(overrides: Partial<Account>): Account {
     usd_per_10k_miles: 0,
     transfer_rates: {},
     currency: 'USD',
-    brokerage: null,
     ticker: null,
     brokerage_account_id: null,
     shares: 0,
@@ -32,7 +31,6 @@ function makeAccount(overrides: Partial<Account>): Account {
     last_price_date: null,
     reward_rules: [],
     spend_stats: {},
-    auto_pay_config: null,
     created_at: '2026-03-16T00:00:00.000Z',
     updated_at: '2026-03-16T00:00:00.000Z',
     ...overrides,

@@ -22,10 +22,10 @@ export type CurrencyId = keyof typeof SUPPORTED_CURRENCIES;
 
 export interface Account {
   id: string;
-  user_id: string;
   name: string;
   type: AccountType;
   balance: number;
+  apy: number | null;
   credit_limit: number | null;
   reward_currency: RewardCurrencyId | null;
   reward_balance: number;
@@ -33,7 +33,6 @@ export interface Account {
   usd_per_10k_miles: number;
   transfer_rates: MileageTransferRateMap;
   currency: CurrencyId;
-  brokerage: string | null;
   ticker: string | null;
   brokerage_account_id: string | null;
   shares: number;
@@ -42,7 +41,6 @@ export interface Account {
   last_price_date: string | null;
   reward_rules: RewardRule[];
   spend_stats: Record<string, number>;
-  auto_pay_config: unknown;
   created_at: string;
   updated_at: string;
 }
@@ -70,12 +68,10 @@ export type CreateAccountInput = Pick<Account, 'type' | 'balance' | 'currency'> 
   reward_currency?: RewardCurrencyId | null;
   airline_program?: AirlineProgram;
   usd_per_10k_miles?: number;
-  brokerage?: string;
   ticker?: string;
   brokerage_account_id?: string;
   initial_shares?: number;
   initial_price?: number;
-  initial_fee?: number;
   deduct_from_brokerage?: boolean;
 };
 

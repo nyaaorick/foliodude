@@ -24,14 +24,11 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog';
+import { localToday } from '@/lib/utils/local-date';
 
 interface RedeemMileageFlightDialogProps {
   mileageAccountId: string;
   taxAccounts: AccountOption[];
-}
-
-function getTodayDateValue() {
-  return new Date().toISOString().split('T')[0];
 }
 
 function buildDefaultTicketName(dateValue: string) {
@@ -48,9 +45,9 @@ export function RedeemMileageFlightDialog({
 }: RedeemMileageFlightDialogProps) {
   const [open, setOpen] = useState(false);
   const [taxAccountId, setTaxAccountId] = useState(taxAccounts[0]?.id ?? '');
-  const [dateValue, setDateValue] = useState(getTodayDateValue);
+  const [dateValue, setDateValue] = useState(localToday);
   const [ticketName, setTicketName] = useState(() =>
-    buildDefaultTicketName(getTodayDateValue()),
+    buildDefaultTicketName(localToday()),
   );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -62,7 +59,7 @@ export function RedeemMileageFlightDialog({
 
   const resetState = () => {
     setTaxAccountId(taxAccounts[0]?.id ?? '');
-    const nextDateValue = getTodayDateValue();
+    const nextDateValue = localToday();
     setDateValue(nextDateValue);
     setTicketName(buildDefaultTicketName(nextDateValue));
     setSubmitting(false);

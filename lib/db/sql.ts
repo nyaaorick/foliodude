@@ -50,30 +50,23 @@ export async function one<T>(
  * plain uuid/text column needs no such workaround.
  */
 
-/** Postgres SQLSTATE for a unique-constraint violation. */
+/** Postgres SQLSTATEs for a unique-constraint and a CHECK-constraint violation. */
 export const UNIQUE_VIOLATION = '23505';
+export const CHECK_VIOLATION = '23514';
 
-export function isUniqueViolation(error: unknown): boolean {
+function hasSqlState(error: unknown, code: string): boolean {
   return (
     typeof error === 'object' &&
     error !== null &&
     'code' in error &&
-    (error as { code?: unknown }).code === UNIQUE_VIOLATION
+    (error as { code?: unknown }).code === code
   );
 }
 
-/**
- * PGlite returns `numeric` as a string to preserve precision (`'12.34'`), while
- * the app's types model money as `number` and do exact arithmetic with
- * decimal.js on top. Convert at the query boundary so callers never see the
- * string form.
- */
-export function num(value: unknown): number {
-  if (value === null || value === undefined) return 0;
-  return typeof value === 'number' ? value : Number(value);
+export function isUniqueViolation(error: unknown): boolean {
+  return hasSqlState(error, UNIQUE_VIOLATION);
 }
 
-export function numOrNull(value: unknown): number | null {
-  if (value === null || value === undefined) return null;
-  return typeof value === 'number' ? value : Number(value);
+export function isCheckViolation(error: unknown): boolean {
+  return hasSqlState(error, CHECK_VIOLATION);
 }

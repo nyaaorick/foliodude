@@ -24,7 +24,6 @@ export interface TransactionInsert {
   share_ticker?: string | null;
   share_quantity?: number | null;
   share_price?: number | null;
-  fee?: number | null;
 }
 
 /**
@@ -36,19 +35,17 @@ export interface TransactionInsert {
  */
 export async function insertTransaction(
   db: Queryable,
-  userId: string,
   row: TransactionInsert,
 ): Promise<string> {
   const inserted = await one<{ id: string }>(
     db,
     `INSERT INTO transactions
-       (user_id, type, amount, currency, reward_currency, metadata,
+       (type, amount, currency, reward_currency, metadata,
         reference_transaction_id, from_account, to_account, category, memo,
-        share_ticker, share_quantity, share_price, fee, transaction_date)
-     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+        share_ticker, share_quantity, share_price, transaction_date)
+     VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14)
      RETURNING id`,
     [
-      userId,
       row.type,
       row.amount,
       row.currency ?? null,
@@ -62,7 +59,6 @@ export async function insertTransaction(
       row.share_ticker ?? null,
       row.share_quantity ?? null,
       row.share_price ?? null,
-      row.fee ?? null,
       row.transaction_date,
     ],
     'Failed to create transaction',
@@ -71,45 +67,24 @@ export async function insertTransaction(
   return inserted.id;
 }
 
-/**
- * Load one account the user owns. A miss means the account does not exist or
- * belongs to someone else — the caller cannot distinguish, and should not.
- */
+/** Load one account, flattened with its details. */
 export function loadAccount<T>(
   db: Queryable,
-  userId: string,
   accountId: string,
   columns: string,
   notFoundMessage = 'Account not found',
 ): Promise<T> {
   return one<T>(
     db,
-    `SELECT ${columns} FROM accounts WHERE id = $1 AND user_id = $2`,
-    [accountId, userId],
+    `SELECT ${columns} FROM accounts_flat WHERE id = $1`,
+    [accountId],
     notFoundMessage,
   );
 }
 
-/** Apply a partial account update. Keys are column names; values are bound. */
-export async function updateAccount(
-  db: Queryable,
-  userId: string,
-  accountId: string,
-  patch: Record<string, unknown>,
-): Promise<void> {
-  const columns = Object.keys(patch);
-  if (columns.length === 0) return;
-
-  const assignments = columns.map((column, i) => `${column} = $${i + 1}`).join(', ');
-  const values = columns.map((column) => {
-    const value = patch[column];
-    return value !== null && typeof value === 'object' ? JSON.stringify(value) : value;
-  });
-
-  await db.query(
-    `UPDATE accounts SET ${assignments} WHERE id = $${columns.length + 1} AND user_id = $${columns.length + 2}`,
-    [...values, accountId, userId],
-  );
+/** Set an account's balance. */
+export async function setBalance(db: Queryable, accountId: string, balance: number): Promise<void> {
+  await db.query('UPDATE accounts SET balance = $1 WHERE id = $2', [balance, accountId]);
 }
 
 /** Trim to null — the ledger stores an absent memo as NULL, never ''. */

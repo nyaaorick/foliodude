@@ -40,7 +40,7 @@ vi.mock('@/lib/actions/account-read-actions', () => ({
 }));
 
 vi.mock('@/lib/db/session', () => ({
-  getSessionContext: vi.fn().mockResolvedValue({ db: {}, userId: 'user-1' }),
+  getSessionContext: vi.fn().mockResolvedValue({ db: {} }),
 }));
 
 vi.mock('@/lib/db/settings', () => ({
@@ -57,7 +57,6 @@ const HSBC_ACCOUNT_ID = '44444444-4444-4444-8444-444444444444';
 const ACCOUNT_ROWS = [
   {
     id: BOA_CHECKING_ID,
-    user_id: 'user-1',
     name: 'BoA Checking',
     type: AccountType.ASSET,
     balance: 1000,
@@ -68,7 +67,6 @@ const ACCOUNT_ROWS = [
     usd_per_10k_miles: 0,
     transfer_rates: {},
     currency: 'USD',
-    brokerage: null,
     ticker: null,
     brokerage_account_id: null,
     shares: 0,
@@ -77,14 +75,12 @@ const ACCOUNT_ROWS = [
     last_price_date: null,
     reward_rules: [],
     spend_stats: {},
-    auto_pay_config: null,
     created_at: '2026-03-21T00:00:00.000Z',
     updated_at: '2026-03-21T00:00:00.000Z',
     available_credit: null,
   },
   {
     id: CASH_WALLET_ID,
-    user_id: 'user-1',
     name: 'Cash Wallet',
     type: AccountType.ASSET,
     balance: 120,
@@ -95,7 +91,6 @@ const ACCOUNT_ROWS = [
     usd_per_10k_miles: 0,
     transfer_rates: {},
     currency: 'USD',
-    brokerage: null,
     ticker: null,
     brokerage_account_id: null,
     shares: 0,
@@ -104,14 +99,12 @@ const ACCOUNT_ROWS = [
     last_price_date: null,
     reward_rules: [],
     spend_stats: {},
-    auto_pay_config: null,
     created_at: '2026-03-21T00:00:00.000Z',
     updated_at: '2026-03-21T00:00:00.000Z',
     available_credit: null,
   },
   {
     id: AMEX_GOLD_ID,
-    user_id: 'user-1',
     name: 'Amex Gold',
     type: AccountType.LIABILITY,
     balance: -200,
@@ -122,7 +115,6 @@ const ACCOUNT_ROWS = [
     usd_per_10k_miles: 0,
     transfer_rates: {},
     currency: 'USD',
-    brokerage: null,
     ticker: null,
     brokerage_account_id: null,
     shares: 0,
@@ -131,14 +123,12 @@ const ACCOUNT_ROWS = [
     last_price_date: null,
     reward_rules: [],
     spend_stats: {},
-    auto_pay_config: null,
     created_at: '2026-03-21T00:00:00.000Z',
     updated_at: '2026-03-21T00:00:00.000Z',
     available_credit: 9800,
   },
   {
     id: HSBC_ACCOUNT_ID,
-    user_id: 'user-1',
     name: 'HSBC',
     type: AccountType.ASSET,
     balance: 5000,
@@ -149,7 +139,6 @@ const ACCOUNT_ROWS = [
     usd_per_10k_miles: 0,
     transfer_rates: {},
     currency: 'USD',
-    brokerage: null,
     ticker: null,
     brokerage_account_id: null,
     shares: 0,
@@ -158,7 +147,6 @@ const ACCOUNT_ROWS = [
     last_price_date: null,
     reward_rules: [],
     spend_stats: {},
-    auto_pay_config: null,
     created_at: '2026-03-21T00:00:00.000Z',
     updated_at: '2026-03-21T00:00:00.000Z',
     available_credit: null,

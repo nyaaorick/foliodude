@@ -13,6 +13,7 @@ import {
   type CurrencyId,
 } from '@/lib/types/accounts';
 import { AIRLINE_PROGRAM_IDS } from '@/lib/types/mileage';
+import { localToday } from '@/lib/utils/local-date';
 import { REWARD_CURRENCY_IDS } from '@/lib/types/rewards';
 
 // No shipped credential (PLAN.md §1 / §7): the caller supplies a key from
@@ -42,7 +43,6 @@ const AI_ACCOUNT_TYPES = [
   AccountType.ASSET,
   AccountType.LIABILITY,
 ] as const;
-const SHANGHAI_TIME_ZONE = 'Asia/Shanghai';
 const DATE_ONLY_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
 const currencyIds = Object.keys(SUPPORTED_CURRENCIES) as [
@@ -69,12 +69,10 @@ const CreateAccountPayloadSchema = z.object({
   reward_currency: z.enum(REWARD_CURRENCY_IDS).nullable().optional(),
   airline_program: z.enum(AIRLINE_PROGRAM_IDS).optional(),
   usd_per_10k_miles: z.number().int().nonnegative().optional(),
-  brokerage: z.string().trim().optional(),
   ticker: z.string().trim().optional(),
   brokerage_account_id: z.string().uuid().optional(),
   initial_shares: z.number().finite().min(0).optional(),
   initial_price: z.number().finite().min(0).optional(),
-  initial_fee: z.number().finite().min(0).optional(),
   deduct_from_brokerage: z.boolean().optional(),
 });
 
@@ -279,27 +277,6 @@ export type CreateByIntentFromTextResult =
 type AiAccountCandidate = z.infer<typeof AiAccountCandidateSchema>;
 type StepIntent = (typeof AI_STEP_INTENTS)[number];
 type StepResult = CreateByIntentResult<StepIntent>;
-
-function getDateInTimeZone(date: Date, timeZone: string) {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(date);
-
-  const values = Object.fromEntries(
-    parts
-      .filter((part) => part.type !== 'literal')
-      .map((part) => [part.type, part.value]),
-  ) as Record<'year' | 'month' | 'day', string>;
-
-  return `${values.year}-${values.month}-${values.day}`;
-}
-
-function getShanghaiTodayDate() {
-  return getDateInTimeZone(new Date(), SHANGHAI_TIME_ZONE);
-}
 
 function normalizeImageOcrResult(input: {
   ocr: z.infer<typeof AiVisionOcrResultSchema>;
@@ -1083,8 +1060,8 @@ export async function createByIntentFromText(
   input: CreateByIntentFromTextInput,
 ): Promise<CreateByIntentFromTextResult> {
   const { text, traceId } = CreateByIntentFromTextInputSchema.parse(input);
-  const { db, userId } = await getSessionContext();
-  const apiKey = await getApiKey(db, userId, 'gemini');
+  const { db } = await getSessionContext();
+  const apiKey = await getApiKey(db, 'gemini');
   if (!apiKey) {
     throw new Error('No Gemini API key configured. Add one in Settings to enable AI-assisted entry.');
   }
@@ -1095,7 +1072,7 @@ export async function createByIntentFromText(
     text,
     apiKey,
     accounts: aiAccounts,
-    todayDate: getShanghaiTodayDate(),
+    todayDate: localToday(),
   });
 
   if ('no_action' in plan) {
@@ -1120,15 +1097,15 @@ export async function createByIntentFromImage(
 ): Promise<CreateByIntentFromImageResult> {
   const { imageBase64, mimeType, text, traceId } =
     CreateByIntentFromImageInputSchema.parse(input);
-  const { db, userId } = await getSessionContext();
-  const apiKey = await getApiKey(db, userId, 'gemini');
+  const { db } = await getSessionContext();
+  const apiKey = await getApiKey(db, 'gemini');
   if (!apiKey) {
     throw new Error('No Gemini API key configured. Add one in Settings to enable AI-assisted entry.');
   }
 
   const accounts = await getAccounts();
   const aiAccounts = buildAiAccountCandidates(accounts, AI_ACCOUNT_TYPES);
-  const fallbackDate = getShanghaiTodayDate();
+  const fallbackDate = localToday();
   const ocrResult = await generateImageOcr({
     imageBase64,
     mimeType,

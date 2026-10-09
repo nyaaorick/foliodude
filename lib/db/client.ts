@@ -7,15 +7,20 @@ const DATA_DIR = 'idb://foliodude';
 
 /**
  * Type parsers that make PGlite's output match what the app's types declare.
- * Without these, `DATE` arrives as a JS Date (reintroducing the timezone
- * handling the schema was flattened to remove) and `DECIMAL` as a string.
+ * Without these, `DATE` and `TIMESTAMPTZ` arrive as JS Dates and `DECIMAL` as a
+ * string, none of which match the types the app declares.
  */
 const DATE_OID = 1082;
+const TIMESTAMPTZ_OID = 1184;
 const NUMERIC_OID = 1700;
 const INT8_OID = 20;
 
 const PARSERS = {
   [DATE_OID]: (value: string) => value,
+  // The connection pins UTC, so the text is `2026-01-02 03:04:05.678+00`; JS
+  // needs the `T` and a full `+00:00` offset to parse it.
+  [TIMESTAMPTZ_OID]: (value: string) =>
+    new Date(value.replace(' ', 'T').replace(/([+-]\d{2})$/, '$1:00')).toISOString(),
   // DECIMAL/NUMERIC arrives as text to preserve precision. The app models money
   // as `number` (see lib/types/database.ts) and does exact arithmetic with
   // decimal.js on top, so convert here rather than making every declared type a
@@ -30,9 +35,8 @@ let opening: Promise<PGlite> | null = null;
 async function open(dataDir: string): Promise<PGlite> {
   const db = await PGlite.create({ dataDir, parsers: PARSERS });
 
-  // CURRENT_DATE reads the session timezone, so an unpinned connection would
-  // roll the day over at the host's midnight and break the one-snapshot-per-day
-  // unique index. Everything in this app is UTC.
+  // Pinned so TIMESTAMPTZ text always carries a `+00` offset, which the parser
+  // above relies on. Calendar days do not come from here: see localToday().
   await db.exec("SET TIME ZONE 'UTC';");
 
   await runMigrations(db);
@@ -70,12 +74,4 @@ export async function createMemoryDb(): Promise<PGlite> {
   await db.exec("SET TIME ZONE 'UTC';");
   await runMigrations(db);
   return db;
-}
-
-/** Close and forget the handle. Used by import, which swaps the whole dataDir. */
-export async function closeDb(): Promise<void> {
-  const db = instance;
-  instance = null;
-  opening = null;
-  await db?.close();
 }

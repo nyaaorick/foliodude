@@ -30,17 +30,8 @@ function formatShares(value: number) {
 
 const DEFAULT_ASSET_APY = 3.6;
 
-function getAssetApy(autoPayConfig: unknown) {
-  if (!autoPayConfig || typeof autoPayConfig !== 'object' || Array.isArray(autoPayConfig)) {
-    return DEFAULT_ASSET_APY;
-  }
-
-  const rawApy = (autoPayConfig as Record<string, unknown>).asset_apy;
-  if (typeof rawApy !== 'number' || !Number.isFinite(rawApy) || rawApy < 0) {
-    return DEFAULT_ASSET_APY;
-  }
-
-  return rawApy;
+function getAssetApy(apy: number | null) {
+  return apy ?? DEFAULT_ASSET_APY;
 }
 
 function estimateOneYearProfit(balance: number, apy: number) {
@@ -71,7 +62,7 @@ export function AccountCard({
   const isAsset = account.type === AccountType.ASSET;
   const hasCredit = isLiability && account.credit_limit !== null;
   const [apyDialogOpen, setApyDialogOpen] = useState(false);
-  const [apyInput, setApyInput] = useState(getAssetApy(account.auto_pay_config).toString());
+  const [apyInput, setApyInput] = useState(getAssetApy(account.apy).toString());
   const [apySubmitting, setApySubmitting] = useState(false);
   const [apyError, setApyError] = useState('');
 
@@ -85,7 +76,7 @@ export function AccountCard({
     : account.balance < 0
       ? 'text-red-500'
       : '';
-  const assetApy = getAssetApy(account.auto_pay_config);
+  const assetApy = getAssetApy(account.apy);
   const estimatedOneYearProfit = estimateOneYearProfit(account.balance, assetApy);
   const draftApy = Number(apyInput);
   const draftProfit = estimateOneYearProfit(

@@ -1,7 +1,6 @@
 import { isSignedIn } from '@/lib/auth/google';
 import { getDb } from '@/lib/db/client';
 import { buildSnapshot, restoreSnapshot, type Snapshot } from '@/lib/db/backup';
-import { resetSessionCache } from '@/lib/db/session';
 import { revalidate, subscribe } from '@/lib/data/store';
 import { getDeviceId, getDeviceName } from './device';
 import { downloadSnapshot, findSnapshotFile, uploadSnapshot } from './drive';
@@ -47,12 +46,8 @@ let running: Promise<void> | null = null;
 
 async function pushLocal(): Promise<void> {
   const db = await getDb();
-  const result = await db.query<{ user_id: string }>(
-    'SELECT user_id FROM local_identity WHERE singleton',
-  );
-  const userId = result.rows[0]!.user_id;
 
-  const snapshot = await buildSnapshot(db, userId, {
+  const snapshot = await buildSnapshot(db, {
     deviceId: getDeviceId(),
     deviceName: getDeviceName(),
   });
@@ -71,14 +66,10 @@ async function hasLocalLedger(): Promise<boolean> {
 
 async function pullRemote(snapshot: Snapshot): Promise<void> {
   const db = await getDb();
-  const result = await db.query<{ user_id: string }>(
-    'SELECT user_id FROM local_identity WHERE singleton',
-  );
 
   // The raw handle, not `getSessionContext()`'s guarded one — restoring is the
   // one write a read-only device must be able to perform. See lib/db/session.ts.
-  await restoreSnapshot(db, result.rows[0]!.user_id, snapshot);
-  resetSessionCache();
+  await restoreSnapshot(db, snapshot);
   revalidate();
 }
 

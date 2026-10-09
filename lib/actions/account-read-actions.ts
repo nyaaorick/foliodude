@@ -29,13 +29,6 @@ const ACCOUNT_TYPE_ORDER: Record<AccountType, number> = {
   [AccountType.SHARE]: 3,
 };
 
-/**
- * A memo carrying this marker is excluded from `loadAccountTransactions`.
- * `createByIntent` uses it to log a transaction's raw intent text without that
- * text appearing as the visible memo in the account's ledger view.
- */
-const HIDDEN_MARKER = '[HIDDEN]';
-
 type AccountOptionRow = Pick<
   AccountRow,
   | 'id'
@@ -85,7 +78,6 @@ function mapAccountOption(row: AccountOptionRow): AccountOption {
 function mapTransaction(row: TransactionRow): Transaction {
   return {
     id: row.id,
-    user_id: row.user_id,
     type: row.type as TransactionType,
     amount: row.amount,
     currency: row.currency,
@@ -99,7 +91,6 @@ function mapTransaction(row: TransactionRow): Transaction {
     share_ticker: row.share_ticker,
     share_quantity: row.share_quantity,
     share_price: row.share_price,
-    fee: row.fee,
     transaction_date: row.transaction_date,
     created_at: row.created_at,
   };
@@ -110,21 +101,17 @@ function sortAccounts<T extends { type: AccountType }>(accounts: T[]): T[] {
 }
 
 export async function getAccounts(): Promise<AccountWithStats[]> {
-  const { db, userId } = await getSessionContext();
-  const accountRows = await rows<AccountRow>(
-    db,
-    'SELECT * FROM accounts WHERE user_id = $1',
-    [userId],
-  );
+  const { db } = await getSessionContext();
+  const accountRows = await rows<AccountRow>(db, 'SELECT * FROM accounts_flat');
   return sortAccounts(accountRows.map(mapAccount));
 }
 
 export async function getAccountById(id: string): Promise<AccountWithStats> {
-  const { db, userId } = await getSessionContext();
+  const { db } = await getSessionContext();
   const row = await one<AccountRow>(
     db,
-    'SELECT * FROM accounts WHERE id = $1 AND user_id = $2',
-    [id, userId],
+    'SELECT * FROM accounts_flat WHERE id = $1',
+    [id],
     'Account not found',
   );
   return mapAccount(row);
@@ -132,29 +119,27 @@ export async function getAccountById(id: string): Promise<AccountWithStats> {
 
 /** Same lookup as `getAccountById`, but `null` on a miss instead of throwing. */
 export async function loadAccountDetailCore(accountId: string): Promise<AccountWithStats | null> {
-  const { db, userId } = await getSessionContext();
+  const { db } = await getSessionContext();
   const result = await db.query<AccountRow>(
-    'SELECT * FROM accounts WHERE user_id = $1 AND id = $2',
-    [userId, accountId],
+    'SELECT * FROM accounts_flat WHERE id = $1',
+    [accountId],
   );
   return result.rows[0] ? mapAccount(result.rows[0]) : null;
 }
 
 export async function loadAccountDetailSupport(): Promise<AccountDetailSupportData> {
-  const { db, userId } = await getSessionContext();
+  const { db } = await getSessionContext();
 
   const [accountRows, rewardRateRows] = await Promise.all([
     rows<AccountOptionRow>(
       db,
       `SELECT id, name, type, balance, currency, reward_currency, reward_balance,
               airline_program, brokerage_account_id
-         FROM accounts WHERE user_id = $1`,
-      [userId],
+         FROM accounts_flat`,
     ),
     rows<RewardRateRow>(
       db,
-      'SELECT user_id, reward_currency, usd_per_10k_points, updated_at FROM reward_rates WHERE user_id = $1',
-      [userId],
+      'SELECT reward_currency, usd_per_10k_points, updated_at FROM reward_rates',
     ),
   ]);
 
@@ -169,19 +154,17 @@ export async function loadAccountDetailSupport(): Promise<AccountDetailSupportDa
 /**
  * An account's ledger, newest first, with each row's reward/mileage origin
  * transaction attached for display (e.g. "earned from" a specific expense).
- * Rows whose memo carries `HIDDEN_MARKER` are omitted — see the constant above.
+ * Deleted (tombstoned) rows are omitted.
  */
 export async function loadAccountTransactions(accountId: string): Promise<TransactionWithReward[]> {
-  const { db, userId } = await getSessionContext();
+  const { db } = await getSessionContext();
 
   const transactionRows = await rows<TransactionRow>(
     db,
     `SELECT * FROM transactions
-      WHERE user_id = $1
-        AND (from_account = $2 OR to_account = $2)
-        AND (memo IS NULL OR memo NOT ILIKE '%' || $3 || '%')
+      WHERE (from_account = $1 OR to_account = $1) AND deleted_at IS NULL
       ORDER BY transaction_date DESC, seq DESC`,
-    [userId, accountId, HIDDEN_MARKER],
+    [accountId],
   );
 
   const transactions = transactionRows.map(mapTransaction);
@@ -200,8 +183,8 @@ export async function loadAccountTransactions(accountId: string): Promise<Transa
       Pick<TransactionRow, 'id' | 'type' | 'from_account' | 'to_account'>
     >(
       db,
-      'SELECT id, type, from_account, to_account FROM transactions WHERE user_id = $1 AND id = ANY($2)',
-      [userId, referenceIds],
+      'SELECT id, type, from_account, to_account FROM transactions WHERE id = ANY($1)',
+      [referenceIds],
     );
 
     referenceLookup = new Map(

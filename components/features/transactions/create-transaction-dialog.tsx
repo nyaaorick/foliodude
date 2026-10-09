@@ -24,6 +24,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog';
 import { Plus } from 'lucide-react';
+import { localToday } from '@/lib/utils/local-date';
 
 interface CreateTransactionDialogProps {
   accountId: string;
@@ -141,7 +142,7 @@ export function CreateTransactionDialog({
               name="date"
               type="date"
               required
-              defaultValue={new Date().toISOString().split('T')[0]}
+              defaultValue={localToday()}
             />
           </div>
 

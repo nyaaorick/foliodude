@@ -2,78 +2,40 @@ import type { Queryable } from './session';
 import { maybeOne } from './sql';
 
 /**
- * Typed access to `local_settings` — see 003_local_settings.sql for the table
- * and its two jobs: manual valuation inputs, and bring-your-own-key API
- * credentials. This module is the only place that reads or writes it.
+ * Bring-your-own-key API credentials, stored in `device_secrets` (001_init.sql).
+ * Nothing ships with a value — every row is something this user typed into
+ * Settings on this device. See PLAN.md §1 (Standing Constraint: No Shipped
+ * Credentials) and §7 (Paused Features).
+ *
+ * The table is excluded from snapshot sync by construction (lib/db/backup.ts
+ * does not export it), so a key never leaves the device.
  */
-
-export async function getSetting<T>(
-  db: Queryable,
-  userId: string,
-  key: string,
-): Promise<T | null> {
-  const row = await maybeOne<{ value: T }>(
-    db,
-    'SELECT value FROM local_settings WHERE user_id = $1 AND key = $2',
-    [userId, key],
-  );
-  return row?.value ?? null;
-}
-
-export async function setSetting(
-  db: Queryable,
-  userId: string,
-  key: string,
-  value: unknown,
-): Promise<void> {
-  await db.query(
-    `INSERT INTO local_settings (user_id, key, value)
-     VALUES ($1, $2, $3::jsonb)
-     ON CONFLICT (user_id, key) DO UPDATE SET value = EXCLUDED.value`,
-    [userId, key, JSON.stringify(value)],
-  );
-}
-
-export async function deleteSetting(db: Queryable, userId: string, key: string): Promise<void> {
-  await db.query('DELETE FROM local_settings WHERE user_id = $1 AND key = $2', [userId, key]);
-}
-
-// ── Bring-your-own-key API credentials ──────────────────────────────────────
-// Namespaced 'apikey:<provider>'. Nothing ships with a value here — every row
-// is something this user typed into Settings on this device. See PLAN.md §1
-// (Standing Constraint: No Shipped Credentials) and §7 (Paused Features).
 
 export type ApiKeyProvider = 'exchangerate' | 'finnhub' | 'gemini';
 
-function apiKeySettingKey(provider: ApiKeyProvider): string {
-  return `apikey:${provider}`;
-}
-
-export async function getApiKey(
-  db: Queryable,
-  userId: string,
-  provider: ApiKeyProvider,
-): Promise<string | null> {
-  const value = await getSetting<string>(db, userId, apiKeySettingKey(provider));
-  const trimmed = value?.trim();
-  return trimmed ? trimmed : null;
+export async function getApiKey(db: Queryable, provider: ApiKeyProvider): Promise<string | null> {
+  const row = await maybeOne<{ api_key: string }>(
+    db,
+    'SELECT api_key FROM device_secrets WHERE provider = $1',
+    [provider],
+  );
+  return row?.api_key ?? null;
 }
 
 export async function setApiKey(
   db: Queryable,
-  userId: string,
   provider: ApiKeyProvider,
   apiKey: string,
 ): Promise<void> {
-  await setSetting(db, userId, apiKeySettingKey(provider), apiKey.trim());
+  await db.query(
+    `INSERT INTO device_secrets (provider, api_key) VALUES ($1, $2)
+     ON CONFLICT (provider) DO UPDATE SET api_key = EXCLUDED.api_key, updated_at = now()`,
+    [provider, apiKey.trim()],
+  );
 }
 
-export async function clearApiKey(
-  db: Queryable,
-  userId: string,
-  provider: ApiKeyProvider,
-): Promise<void> {
-  await deleteSetting(db, userId, apiKeySettingKey(provider));
+export async function clearApiKey(db: Queryable, provider: ApiKeyProvider): Promise<void> {
+  await db.query('DELETE FROM device_secrets WHERE provider = $1', [provider]);
 }
 
 /** Last 4 characters only — enough for the user to recognize which key is set. */

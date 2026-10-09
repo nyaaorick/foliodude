@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { getSessionContext } from '@/lib/db/session';
 import { loadAccount } from '@/lib/db/ledger';
 import { one } from '@/lib/db/sql';
+import type { Queryable } from '@/lib/db/session';
 import { AccountType } from '@/lib/types/accounts';
 import type { Account } from '@/lib/types/accounts';
 import { roundMoneyNumber } from '@/lib/utils/financial-analytics';
@@ -18,15 +19,19 @@ const SetAssetApySchema = z.object({
   apy: z.number().finite().nonnegative(),
 });
 
+function loadAccountFlat(db: Queryable, id: string): Promise<Account> {
+  return one<Account>(db, 'SELECT * FROM accounts_flat WHERE id = $1', [id], 'Account not found');
+}
+
 /** Rename an account, and optionally correct its balance in the same write. */
 export async function updateAccount(
   input: z.infer<typeof UpdateAccountSchema>,
 ): Promise<Account> {
-  const { db, userId } = await getSessionContext();
+  const { db } = await getSessionContext();
   const parsed = UpdateAccountSchema.parse(input);
 
   return db.transaction(async (tx) => {
-    const existing = await loadAccount<{ type: AccountType }>(tx, userId, parsed.id, 'type');
+    const existing = await loadAccount<{ type: AccountType }>(tx, parsed.id, 'type');
 
     let balance: number | undefined;
 
@@ -49,48 +54,32 @@ export async function updateAccount(
       }
     }
 
-    return one<Account>(
-      tx,
+    await tx.query(
       balance === undefined
-        ? `UPDATE accounts SET name = $1 WHERE id = $2 AND user_id = $3 RETURNING *`
-        : `UPDATE accounts SET name = $1, balance = $4 WHERE id = $2 AND user_id = $3 RETURNING *`,
-      balance === undefined
-        ? [parsed.name.trim(), parsed.id, userId]
-        : [parsed.name.trim(), parsed.id, userId, balance],
-      'Account not found',
+        ? 'UPDATE accounts SET name = $1 WHERE id = $2'
+        : 'UPDATE accounts SET name = $1, balance = $3 WHERE id = $2',
+      balance === undefined ? [parsed.name.trim(), parsed.id] : [parsed.name.trim(), parsed.id, balance],
     );
+    return loadAccountFlat(tx, parsed.id);
   });
 }
 
-/**
- * Store an asset account's APY.
- *
- * APY lives inside the `auto_pay_config` JSONB blob, so the update merges rather
- * than replaces — jsonb_set would drop sibling keys if the blob were rewritten
- * wholesale.
- */
+/** Store an asset account's APY. */
 export async function setAssetApy(
   input: z.infer<typeof SetAssetApySchema>,
 ): Promise<Account> {
-  const { db, userId } = await getSessionContext();
+  const { db } = await getSessionContext();
   const parsed = SetAssetApySchema.parse(input);
   const normalizedApy = roundMoneyNumber(parsed.apy);
 
   return db.transaction(async (tx) => {
-    const account = await loadAccount<{ type: AccountType }>(tx, userId, parsed.id, 'type');
+    const account = await loadAccount<{ type: AccountType }>(tx, parsed.id, 'type');
 
     if (account.type !== AccountType.ASSET) {
       throw new Error('APY can only be set on asset accounts');
     }
 
-    return one<Account>(
-      tx,
-      `UPDATE accounts
-          SET auto_pay_config = COALESCE(auto_pay_config, '{}'::jsonb) || jsonb_build_object('asset_apy', $1::numeric)
-        WHERE id = $2 AND user_id = $3
-       RETURNING *`,
-      [normalizedApy, parsed.id, userId],
-      'Account not found',
-    );
+    await tx.query('UPDATE accounts SET apy = $1 WHERE id = $2', [normalizedApy, parsed.id]);
+    return loadAccountFlat(tx, parsed.id);
   });
 }

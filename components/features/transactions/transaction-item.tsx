@@ -58,9 +58,6 @@ function formatShareMeta(transaction: TransactionWithReward) {
     transaction.share_price !== null
       ? `at ${formatCurrency(transaction.share_price, transaction.currency ?? 'USD')}`
       : null,
-    transaction.fee !== null
-      ? `fee ${formatCurrency(transaction.fee, transaction.currency ?? 'USD')}`
-      : null,
   ].filter(Boolean);
 
   return parts.join(' · ');

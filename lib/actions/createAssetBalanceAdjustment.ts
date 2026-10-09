@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import Decimal from 'decimal.js';
 import { getSessionContext } from '@/lib/db/session';
-import { insertTransaction, loadAccount, normalizeMemo, updateAccount } from '@/lib/db/ledger';
+import { insertTransaction, loadAccount, normalizeMemo, setBalance } from '@/lib/db/ledger';
 
 import { AccountType } from '@/lib/types/accounts';
 import { TransactionType } from '@/lib/types/transactions';
@@ -34,7 +34,7 @@ interface AssetAccountRow {
 export async function createAssetBalanceAdjustment(
   input: CreateAssetBalanceAdjustmentInput,
 ): Promise<{ transaction_id: string }> {
-  const { db, userId } = await getSessionContext();
+  const { db } = await getSessionContext();
 
   const parsed = CreateAssetBalanceAdjustmentSchema.safeParse(input);
   if (!parsed.success) {
@@ -48,7 +48,6 @@ export async function createAssetBalanceAdjustment(
   return db.transaction(async (tx) => {
     const account = await loadAccount<AssetAccountRow>(
       tx,
-      userId,
       accountId,
       'balance, currency, type',
     );
@@ -57,7 +56,7 @@ export async function createAssetBalanceAdjustment(
       throw new Error('Account must be an asset account');
     }
 
-    const transactionId = await insertTransaction(tx, userId, {
+    const transactionId = await insertTransaction(tx, {
       type: isCredit ? TransactionType.INCOME : TransactionType.EXPENSE,
       amount: Math.abs(amount),
       currency: account.currency,
@@ -69,9 +68,7 @@ export async function createAssetBalanceAdjustment(
       transaction_date: date,
     });
 
-    await updateAccount(tx, userId, accountId, {
-      balance: new Decimal(account.balance).plus(amount).toNumber(),
-    });
+    await setBalance(tx, accountId, new Decimal(account.balance).plus(amount).toNumber());
 
     return { transaction_id: transactionId };
   });

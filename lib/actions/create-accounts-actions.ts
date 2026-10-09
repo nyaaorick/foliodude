@@ -10,8 +10,9 @@ import { getDefaultMileageTransferRates } from '@/lib/data/mileage-transfer-rate
 import { REWARD_CURRENCY_IDS } from '@/lib/types/rewards';
 import { roundMoneyDecimal, roundSharesDecimal } from '@/lib/utils/financial-analytics';
 import { buildShareAccountName } from '@/lib/utils/share-account-name';
-import { buyShareWithinTransaction } from '@/lib/actions/share-actions';
+import { buyShareWithinTransaction, syncShareBalance } from '@/lib/actions/share-actions';
 import type { Queryable } from '@/lib/db/session';
+import { localToday } from '@/lib/utils/local-date';
 
 const CreateAccountSchema = z.object({
   name: z.string().trim().optional(),
@@ -22,12 +23,10 @@ const CreateAccountSchema = z.object({
   reward_currency: z.enum(REWARD_CURRENCY_IDS).nullable().optional(),
   airline_program: z.enum(AIRLINE_PROGRAM_IDS).optional(),
   usd_per_10k_miles: z.number().int().nonnegative().optional(),
-  brokerage: z.string().trim().optional(),
   ticker: z.string().trim().optional(),
   brokerage_account_id: z.string().uuid().optional(),
   initial_shares: z.number().finite().min(0).optional(),
   initial_price: z.number().finite().min(0).optional(),
-  initial_fee: z.number().finite().min(0).optional(),
   deduct_from_brokerage: z.boolean().optional(),
 });
 
@@ -47,64 +46,27 @@ type ShareAccountInput = CreateAccountData & {
   brokerage_account_id: string;
 };
 
-/** Every column, defaulted for a non-SHARE account. Callers override what applies. */
-const BLANK_ACCOUNT_DEFAULTS = {
-  credit_limit: null as number | null,
-  reward_currency: null as string | null,
-  reward_rules: [] as unknown[],
-  reward_balance: 0,
-  airline_program: null as string | null,
-  usd_per_10k_miles: 0,
-  transfer_rates: {} as Record<string, unknown>,
-  ticker: null as string | null,
-  brokerage_account_id: null as string | null,
-  shares: 0,
-  cost_basis: 0,
-  last_price: null as number | null,
-};
-
-async function insertAccount(
+/** Insert the `accounts` row every account has; returns its id. */
+async function insertBaseAccount(
   db: Queryable,
-  userId: string,
-  accountType: AccountType,
-  fields: {
-    name: string;
-    currency: string;
-    balance: number;
-    brokerage: string | null;
-  } & Partial<typeof BLANK_ACCOUNT_DEFAULTS>,
-): Promise<Account> {
-  const row = { ...BLANK_ACCOUNT_DEFAULTS, ...fields };
+  fields: { name: string; type: AccountType; currency: string; balance: number },
+): Promise<string> {
+  const created = await one<{ id: string }>(
+    db,
+    `INSERT INTO accounts (name, type, currency, balance) VALUES ($1, $2, $3, $4) RETURNING id`,
+    [fields.name, fields.type, fields.currency, fields.balance],
+    'Failed to create account',
+  );
+  return created.id;
+}
 
-  try {
-    return await one<Account>(
-      db,
-      `INSERT INTO accounts
-         (user_id, name, type, currency, balance, credit_limit, reward_currency,
-          reward_rules, reward_balance, airline_program, usd_per_10k_miles,
-          transfer_rates, brokerage, ticker, brokerage_account_id, shares, cost_basis,
-          last_price)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12::jsonb, $13, $14, $15, $16, $17, $18)
-       RETURNING *`,
-      [
-        userId, row.name, accountType, row.currency, row.balance, row.credit_limit,
-        row.reward_currency, JSON.stringify(row.reward_rules), row.reward_balance,
-        row.airline_program, row.usd_per_10k_miles, JSON.stringify(row.transfer_rates),
-        row.brokerage, row.ticker, row.brokerage_account_id, row.shares, row.cost_basis,
-        row.last_price,
-      ],
-      'Failed to create account',
-    );
-  } catch (error) {
-    if (isUniqueViolation(error)) {
-      throw new Error(
-        accountType === AccountType.SHARE
-          ? 'This cash account already has a position for that ticker'
-          : 'This airline program already has a mileage account',
-      );
-    }
-    throw error;
-  }
+function loadCreatedAccount(db: Queryable, id: string): Promise<Account> {
+  return one<Account>(
+    db,
+    'SELECT * FROM accounts_flat WHERE id = $1',
+    [id],
+    'Failed to load created account',
+  );
 }
 
 function requireAccountName(input: CreateAccountData): string {
@@ -125,13 +87,12 @@ function requireShareAccountInput(input: CreateAccountData): ShareAccountInput {
 
 async function loadBrokerageCashAccount(
   db: Queryable,
-  userId: string,
   brokerageAccountId: string,
 ): Promise<BrokerageAccountRecord> {
   const account = await one<BrokerageAccountRecord>(
     db,
-    'SELECT id, type, currency, name, balance FROM accounts WHERE id = $1 AND user_id = $2',
-    [brokerageAccountId, userId],
+    'SELECT id, type, currency, name, balance FROM accounts WHERE id = $1',
+    [brokerageAccountId],
     'Brokerage cash account not found',
   );
   if (account.type !== AccountType.ASSET) throw new Error('Brokerage cash account must be an asset account');
@@ -139,16 +100,17 @@ async function loadBrokerageCashAccount(
   return account;
 }
 
-async function createAssetAccount(db: Queryable, userId: string, input: CreateAccountData): Promise<Account> {
-  return insertAccount(db, userId, AccountType.ASSET, {
+async function createAssetAccount(db: Queryable, input: CreateAccountData): Promise<Account> {
+  const id = await insertBaseAccount(db, {
     name: requireAccountName(input),
+    type: AccountType.ASSET,
     currency: input.currency,
     balance: input.balance,
-    brokerage: input.brokerage?.trim() || null,
   });
+  return loadCreatedAccount(db, id);
 }
 
-async function createLiabilityAccount(db: Queryable, userId: string, input: CreateAccountData): Promise<Account> {
+async function createLiabilityAccount(db: Queryable, input: CreateAccountData): Promise<Account> {
   const hasRewardCurrency = (input.reward_currency ?? null) !== null;
   let rewardRules: unknown[] = [];
 
@@ -160,18 +122,21 @@ async function createLiabilityAccount(db: Queryable, userId: string, input: Crea
     rewardRules = defaultLiabilityRuleSet.rules;
   }
 
-  return insertAccount(db, userId, AccountType.LIABILITY, {
+  const id = await insertBaseAccount(db, {
     name: requireAccountName(input),
+    type: AccountType.LIABILITY,
     currency: input.currency,
     balance: input.balance,
-    brokerage: input.brokerage?.trim() || null,
-    credit_limit: input.credit_limit ?? null,
-    reward_currency: input.reward_currency ?? null,
-    reward_rules: rewardRules,
   });
+  await db.query(
+    `INSERT INTO liability_details (account_id, credit_limit, reward_currency, reward_rules)
+     VALUES ($1, $2, $3, $4::jsonb)`,
+    [id, input.credit_limit ?? null, input.reward_currency ?? null, JSON.stringify(rewardRules)],
+  );
+  return loadCreatedAccount(db, id);
 }
 
-async function createAirlineMilesAccount(db: Queryable, userId: string, input: CreateAccountData): Promise<Account> {
+async function createAirlineMilesAccount(db: Queryable, input: CreateAccountData): Promise<Account> {
   if (!input.airline_program) throw new Error('Airline program is required for mileage accounts');
   if (!Number.isInteger(input.balance) || input.balance < 0) {
     throw new Error('Mileage balance must be a non-negative integer');
@@ -179,34 +144,41 @@ async function createAirlineMilesAccount(db: Queryable, userId: string, input: C
 
   const accountName = getAirlineProgramDefinition(input.airline_program)?.displayName ?? input.airline_program;
 
-  return insertAccount(db, userId, AccountType.AIRLINE_MILES, {
+  const id = await insertBaseAccount(db, {
     name: accountName,
+    type: AccountType.AIRLINE_MILES,
     currency: 'USD',
     balance: input.balance,
-    brokerage: input.brokerage?.trim() || null,
-    airline_program: input.airline_program,
-    usd_per_10k_miles: input.usd_per_10k_miles ?? 0,
-    transfer_rates: getDefaultMileageTransferRates(),
   });
+
+  try {
+    await db.query(
+      `INSERT INTO mileage_details (account_id, airline_program, usd_per_10k_miles, transfer_rates)
+       VALUES ($1, $2, $3, $4::jsonb)`,
+      [
+        id,
+        input.airline_program,
+        input.usd_per_10k_miles ?? 0,
+        JSON.stringify(getDefaultMileageTransferRates()),
+      ],
+    );
+  } catch (error) {
+    if (isUniqueViolation(error)) throw new Error('This airline program already has a mileage account');
+    throw error;
+  }
+  return loadCreatedAccount(db, id);
 }
 
 /**
  * Create a SHARE account, and — if an initial position is given — fund it in
- * the same transaction. `deleteCreatedAccountOrThrow` from the old Supabase
- * version does not have an equivalent here: this whole function runs inside
- * one `db.transaction()`, so a failed initial buy rolls the account creation
- * back with it instead of needing an explicit compensating delete.
+ * the same transaction. This whole function runs inside one `db.transaction()`,
+ * so a failed initial buy rolls the account creation back with it.
  */
-async function createShareAccount(
-  db: Queryable,
-  userId: string,
-  input: ShareAccountInput,
-): Promise<Account> {
-  const brokerageAccount = await loadBrokerageCashAccount(db, userId, input.brokerage_account_id);
+async function createShareAccount(db: Queryable, input: ShareAccountInput): Promise<Account> {
+  const brokerageAccount = await loadBrokerageCashAccount(db, input.brokerage_account_id);
 
   const initialShares = roundSharesDecimal(input.initial_shares ?? 0);
   const initialPrice = new Decimal(input.initial_price ?? 0);
-  const initialFee = roundMoneyDecimal(input.initial_fee ?? 0);
   const shouldInitializePosition = initialShares.gt(0);
   const shouldDeductFromBrokerage = Boolean(input.deduct_from_brokerage);
 
@@ -215,63 +187,61 @@ async function createShareAccount(
   }
 
   if (shouldInitializePosition && shouldDeductFromBrokerage) {
-    const totalCost = roundMoneyDecimal(initialShares.mul(initialPrice).plus(initialFee));
+    const totalCost = roundMoneyDecimal(initialShares.mul(initialPrice));
     if (new Decimal(brokerageAccount.balance).lt(totalCost)) {
       throw new Error('Insufficient cash balance');
     }
   }
 
-  const accountName = buildShareAccountName(input.ticker, brokerageAccount.name);
-  const created = await insertAccount(db, userId, AccountType.SHARE, {
-    name: accountName,
+  const id = await insertBaseAccount(db, {
+    name: buildShareAccountName(input.ticker, brokerageAccount.name),
+    type: AccountType.SHARE,
     currency: 'USD',
     balance: 0,
-    brokerage: input.brokerage?.trim() || null,
-    ticker: input.ticker,
-    brokerage_account_id: input.brokerage_account_id,
   });
 
-  if (!shouldInitializePosition) {
-    return created;
+  // A position that is not funded from the brokerage cash account is seeded
+  // directly (e.g. shares transferred in from elsewhere): no cash movement.
+  const seeded = shouldInitializePosition && !shouldDeductFromBrokerage;
+
+  try {
+    await db.query(
+      `INSERT INTO share_details
+         (account_id, brokerage_account_id, ticker, shares, cost_basis, last_price, last_price_date)
+       VALUES ($1, $2, $3, $4, $5, $6, CASE WHEN $6::numeric IS NULL THEN NULL ELSE $7::date END)`,
+      [
+        id,
+        input.brokerage_account_id,
+        input.ticker,
+        seeded ? initialShares.toNumber() : 0,
+        seeded ? roundMoneyDecimal(initialShares.mul(initialPrice)).toNumber() : 0,
+        seeded ? initialPrice.toNumber() : null,
+        localToday(),
+      ],
+    );
+  } catch (error) {
+    if (isUniqueViolation(error)) throw new Error('This cash account already has a position for that ticker');
+    throw error;
   }
 
-  if (shouldDeductFromBrokerage) {
-    const buyResult = await buyShareWithinTransaction(db, userId, {
-      shareAccountId: created.id,
+  if (seeded) {
+    await syncShareBalance(db, id);
+  } else if (shouldInitializePosition) {
+    const buyResult = await buyShareWithinTransaction(db, {
+      shareAccountId: id,
       brokerageAccountId: input.brokerage_account_id,
       quantity: initialShares.toNumber(),
       price: initialPrice.toNumber(),
-      fee: initialFee.toNumber(),
       memo: 'Initial position',
     });
     if (!buyResult.success) throw new Error(buyResult.error);
-
-    return one<Account>(
-      db,
-      'SELECT * FROM accounts WHERE id = $1 AND user_id = $2',
-      [created.id, userId],
-      'Failed to load created share account',
-    );
   }
 
-  // Not funded from the brokerage cash account: the position is seeded
-  // directly (e.g. shares transferred in from elsewhere), no cash movement.
-  const costBasis = roundMoneyDecimal(initialShares.mul(initialPrice).plus(initialFee));
-  const balance = roundMoneyDecimal(initialShares.mul(initialPrice));
-
-  return one<Account>(
-    db,
-    `UPDATE accounts
-        SET shares = $1, cost_basis = $2, last_price = $3, last_price_date = CURRENT_DATE, balance = $4
-      WHERE id = $5 AND user_id = $6
-     RETURNING *`,
-    [initialShares.toNumber(), costBasis.toNumber(), initialPrice.toNumber(), balance.toNumber(), created.id, userId],
-    'Failed to initialize share position',
-  );
+  return loadCreatedAccount(db, id);
 }
 
 export async function createAccount(input: CreateAccountInput): Promise<Account> {
-  const { db, userId } = await getSessionContext();
+  const { db } = await getSessionContext();
   const parsed = CreateAccountSchema.safeParse(input);
   if (!parsed.success) {
     throw new Error(parsed.error.issues[0]?.message ?? 'Invalid account input');
@@ -280,14 +250,14 @@ export async function createAccount(input: CreateAccountInput): Promise<Account>
   return db.transaction(async (tx) => {
     switch (parsed.data.type) {
       case AccountType.SHARE:
-        return createShareAccount(tx, userId, requireShareAccountInput(parsed.data));
+        return createShareAccount(tx, requireShareAccountInput(parsed.data));
       case AccountType.AIRLINE_MILES:
-        return createAirlineMilesAccount(tx, userId, parsed.data);
+        return createAirlineMilesAccount(tx, parsed.data);
       case AccountType.LIABILITY:
-        return createLiabilityAccount(tx, userId, parsed.data);
+        return createLiabilityAccount(tx, parsed.data);
       case AccountType.ASSET:
       default:
-        return createAssetAccount(tx, userId, parsed.data);
+        return createAssetAccount(tx, parsed.data);
     }
   });
 }

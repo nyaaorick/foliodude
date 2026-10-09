@@ -93,13 +93,14 @@ describe('createTransaction', () => {
     expect(Number((await getAccount(ctx.db, accountId)).balance)).toBe(70);
   });
 
-  it('rejects an account that belongs to someone else', async () => {
-    const accountId = await seedAccount(ctx, {
-      user_id: '00000000-0000-4000-8000-000000000999',
-    });
-
+  it('rejects an account that does not exist', async () => {
     await expect(
-      createTransaction({ accountId, category: 'Dining', amount: 5, date: DATE }),
+      createTransaction({
+        accountId: '00000000-0000-4000-8000-000000000999',
+        category: 'Dining',
+        amount: 5,
+        date: DATE,
+      }),
     ).rejects.toThrow('Account not found');
   });
 

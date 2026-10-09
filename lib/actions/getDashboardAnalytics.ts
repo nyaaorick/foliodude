@@ -15,19 +15,18 @@ import {
   type ExpenseRow,
 } from '@/lib/utils/financial-analytics';
 import { fetchUsdExchangeRates } from '@/lib/utils/fx-rates';
+import { localToday } from '@/lib/utils/local-date';
 
 type ActionResult<T> = { success: true; data: T } | { success: false; error: string };
 
-const HIDDEN_MARKER = '[HIDDEN]';
-
 async function ensureTodaySnapshot(
   db: Awaited<ReturnType<typeof getSessionContext>>['db'],
-  userId: string,
   accounts: Account[],
   rewardRates: RewardRateMap,
   apiKey: string | null,
 ): Promise<void> {
-  const existing = await db.query('SELECT 1 FROM net_worth_snapshots WHERE user_id = $1 AND snapshot_date = CURRENT_DATE', [userId]);
+  const today = localToday();
+  const existing = await db.query('SELECT 1 FROM net_worth_snapshots WHERE snapshot_date = $1', [today]);
   if (existing.rows.length > 0) return;
 
   const accountCurrencies = accounts
@@ -38,10 +37,11 @@ async function ensureTodaySnapshot(
 
   await db.query(
     `INSERT INTO net_worth_snapshots
-       (user_id, snapshot_date, net_worth_usd, assets_usd, liabilities_usd, breakdown, valuation_inputs)
-     VALUES ($1, CURRENT_DATE, $2, $3, $4, $5::jsonb, $6::jsonb)`,
+       (snapshot_date, net_worth_usd, assets_usd, liabilities_usd, breakdown, valuation_inputs)
+     VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb)
+     ON CONFLICT (snapshot_date) DO NOTHING`,
     [
-      userId,
+      today,
       snapshot.netWorthUsd,
       snapshot.assetsUsd,
       snapshot.liabilitiesUsd,
@@ -53,35 +53,31 @@ async function ensureTodaySnapshot(
 
 export async function getDashboardAnalytics(): Promise<ActionResult<DashboardAnalytics>> {
   try {
-    const { db, userId } = await getSessionContext();
+    const { db } = await getSessionContext();
 
     const [accountRows, rewardRateRows] = await Promise.all([
-      rows<AccountRow>(db, 'SELECT * FROM accounts WHERE user_id = $1', [userId]),
+      rows<AccountRow>(db, 'SELECT * FROM accounts_flat'),
       rows<RewardRateRow>(
         db,
-        'SELECT user_id, reward_currency, usd_per_10k_points, updated_at FROM reward_rates WHERE user_id = $1',
-        [userId],
+        'SELECT reward_currency, usd_per_10k_points, updated_at FROM reward_rates',
       ),
     ]);
     const accounts = accountRows.map(mapAccountRowToAccount);
     const rewardRates = buildRewardRateMap(rewardRateRows);
-    const apiKey = await getApiKey(db, userId, 'exchangerate');
+    const apiKey = await getApiKey(db, 'exchangerate');
 
-    await ensureTodaySnapshot(db, userId, accounts, rewardRates, apiKey);
+    await ensureTodaySnapshot(db, accounts, rewardRates, apiKey);
 
     const [expenseRows, snapshotRows] = await Promise.all([
       rows<ExpenseRow>(
         db,
         `SELECT amount, currency, category, transaction_date FROM transactions
-          WHERE user_id = $1 AND type = 'EXPENSE'
-            AND (memo IS NULL OR memo NOT ILIKE '%' || $2 || '%')
+          WHERE type = 'EXPENSE' AND deleted_at IS NULL
           ORDER BY transaction_date ASC, seq ASC`,
-        [userId, HIDDEN_MARKER],
       ),
       rows<{ snapshot_date: string; net_worth_usd: number }>(
         db,
-        'SELECT snapshot_date, net_worth_usd FROM net_worth_snapshots WHERE user_id = $1 ORDER BY snapshot_date ASC',
-        [userId],
+        'SELECT snapshot_date, net_worth_usd FROM net_worth_snapshots ORDER BY snapshot_date ASC',
       ),
     ]);
 

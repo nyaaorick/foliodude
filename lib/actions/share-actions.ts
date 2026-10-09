@@ -9,6 +9,7 @@ import { TransactionType, type Transaction } from '@/lib/types/transactions';
 import { roundMoneyDecimal, roundSharesDecimal } from '@/lib/utils/financial-analytics';
 import { fetchStockPrices } from '@/lib/utils/stock-price';
 import type { Queryable } from '@/lib/db/session';
+import { localToday } from '@/lib/utils/local-date';
 
 type ActionResult<T> = { success: true; data: T } | { success: false; error: string };
 
@@ -17,15 +18,14 @@ const ShareTradeSchema = z.object({
   brokerageAccountId: z.string().uuid(),
   quantity: z.number().positive(),
   price: z.number().positive(),
-  fee: z.number().min(0).default(0),
   memo: z.string().optional(),
 });
 
 interface ShareAccountRow {
   id: string;
   type: AccountType;
-  ticker: string | null;
-  brokerage_account_id: string | null;
+  ticker: string;
+  brokerage_account_id: string;
   shares: number;
   cost_basis: number;
 }
@@ -37,15 +37,23 @@ interface CashAccountRow {
   balance: number;
 }
 
+/** The position as it stood before a trade, kept on the trade so deleting it restores it exactly. */
+function positionBefore(account: ShareAccountRow) {
+  return { shares_before: account.shares, cost_basis_before: account.cost_basis };
+}
+
+/** `transactions.share_price` is DECIMAL(18,4); the cash amount must be computed from what is stored. */
+function roundSharePriceDecimal(value: Decimal.Value) {
+  return new Decimal(value).toDecimalPlaces(4, Decimal.ROUND_HALF_UP);
+}
+
 async function loadShareAccount(
   db: Queryable,
-  userId: string,
   shareAccountId: string,
 ): Promise<ActionResult<ShareAccountRow>> {
   try {
     const account = await loadAccount<ShareAccountRow>(
       db,
-      userId,
       shareAccountId,
       'id, type, ticker, brokerage_account_id, shares, cost_basis',
       'Share account not found',
@@ -61,13 +69,11 @@ async function loadShareAccount(
 
 async function loadCashAccount(
   db: Queryable,
-  userId: string,
   brokerageAccountId: string,
 ): Promise<ActionResult<CashAccountRow>> {
   try {
     const account = await loadAccount<CashAccountRow>(
       db,
-      userId,
       brokerageAccountId,
       'id, type, currency, balance',
       'Brokerage cash account not found',
@@ -85,23 +91,32 @@ async function loadCashAccount(
 }
 
 /**
- * Recompute a share account's mark-to-market balance and persist a price.
- * Shared by the trade paths, `refreshSharePrices`, and `setSharePrice` — all
- * four end at "this account's price is now X as of today."
+ * Set a share account's balance to shares x last_price, from the rows as they
+ * are now. Computing it in SQL (rather than from shares read earlier) means a
+ * price refresh that awaited the network cannot overwrite a trade that landed
+ * in the meantime.
  */
-async function applySharePrice(
-  db: Queryable,
-  userId: string,
-  accountId: string,
-  shares: number,
-  price: number,
-): Promise<void> {
-  const balance = roundMoneyDecimal(new Decimal(shares).mul(price));
+export async function syncShareBalance(db: Queryable, accountId: string): Promise<void> {
   await db.query(
-    `UPDATE accounts SET last_price = $1, last_price_date = CURRENT_DATE, balance = $2
-      WHERE id = $3 AND user_id = $4`,
-    [price, balance.toNumber(), accountId, userId],
+    `UPDATE accounts a
+        SET balance = round(s.shares * COALESCE(s.last_price, 0), 2)
+       FROM share_details s
+      WHERE s.account_id = a.id AND a.id = $1`,
+    [accountId],
   );
+}
+
+/**
+ * Persist a price as of today and re-mark the position. Shared by the trade
+ * paths, `refreshSharePrices`, and `setSharePrice` — all end at "this account's
+ * price is now X as of today."
+ */
+async function applySharePrice(db: Queryable, accountId: string, price: number): Promise<void> {
+  await db.query(
+    'UPDATE share_details SET last_price = $1, last_price_date = $2 WHERE account_id = $3',
+    [price, localToday(), accountId],
+  );
+  await syncShareBalance(db, accountId);
 }
 
 /**
@@ -111,40 +126,35 @@ async function applySharePrice(
  * `createShareAccount`'s initial-position purchase calls this directly with
  * its own `tx` rather than have `buyShare` open a second one.
  *
- * No optimistic-concurrency retry is needed here (unlike the old multi-round-
- * trip Supabase client): the transaction already serializes the read-then-write,
- * and PGlite has no concurrent writer to race against in the first place.
+ * No optimistic-concurrency retry is needed here: the transaction already
+ * serializes the read-then-write, and PGlite has no concurrent writer to race
+ * against in the first place.
  */
 export async function buyShareWithinTransaction(
   db: Queryable,
-  userId: string,
   input: z.infer<typeof ShareTradeSchema>,
 ): Promise<ActionResult<{ transaction: Transaction }>> {
   const parsed = ShareTradeSchema.safeParse(input);
   if (!parsed.success) {
     return { success: false, error: parsed.error.issues[0]?.message ?? 'Invalid trade input' };
   }
-  const { shareAccountId, brokerageAccountId, quantity, price, fee, memo } = parsed.data;
+  const { shareAccountId, brokerageAccountId, quantity, price, memo } = parsed.data;
 
-  const shareLoad = await loadShareAccount(db, userId, shareAccountId);
+  const shareLoad = await loadShareAccount(db, shareAccountId);
   if (!shareLoad.success) return shareLoad;
   const shareAccount = shareLoad.data;
 
   if (shareAccount.brokerage_account_id !== brokerageAccountId) {
     return { success: false, error: 'This share account is not linked to the selected cash account' };
   }
-  if (!shareAccount.ticker) {
-    return { success: false, error: 'Share account ticker is missing' };
-  }
 
-  const cashLoad = await loadCashAccount(db, userId, brokerageAccountId);
+  const cashLoad = await loadCashAccount(db, brokerageAccountId);
   if (!cashLoad.success) return cashLoad;
   const brokerageAccount = cashLoad.data;
 
   const quantityValue = roundSharesDecimal(quantity);
-  const priceValue = new Decimal(price);
-  const feeValue = roundMoneyDecimal(fee);
-  const cashAmount = roundMoneyDecimal(quantityValue.mul(priceValue).plus(feeValue));
+  const priceValue = roundSharePriceDecimal(price);
+  const cashAmount = roundMoneyDecimal(quantityValue.mul(priceValue));
 
   if (new Decimal(brokerageAccount.balance).lt(cashAmount)) {
     return { success: false, error: 'Insufficient cash balance' };
@@ -157,36 +167,36 @@ export async function buyShareWithinTransaction(
   const transaction = await one<Transaction>(
     db,
     `INSERT INTO transactions
-       (user_id, type, amount, currency, metadata, from_account, to_account, memo,
-        share_ticker, share_quantity, share_price, fee, transaction_date)
-     VALUES ($1, $2, $3, 'USD', '{}'::jsonb, $4, $5, $6, $7, $8, $9, $10, CURRENT_DATE)
+       (type, amount, currency, metadata, from_account, to_account, memo,
+        share_ticker, share_quantity, share_price, transaction_date)
+     VALUES ($1, $2, 'USD', $3::jsonb, $4, $5, $6, $7, $8, $9, $10)
      RETURNING *`,
     [
-      userId,
       TransactionType.SHARE_BUY,
       cashAmount.toNumber(),
+      JSON.stringify(positionBefore(shareAccount)),
       brokerageAccount.id,
       shareAccount.id,
       normalizedMemo,
       shareAccount.ticker,
       quantityValue.toNumber(),
       priceValue.toNumber(),
-      feeValue.toNumber(),
+      localToday(),
     ],
     'Failed to create share buy transaction',
   );
 
-  await db.query('UPDATE accounts SET balance = balance - $1 WHERE id = $2 AND user_id = $3', [
+  await db.query('UPDATE accounts SET balance = balance - $1 WHERE id = $2', [
     cashAmount.toNumber(),
     brokerageAccount.id,
-    userId,
   ]);
 
-  await db.query(
-    'UPDATE accounts SET shares = $1, cost_basis = $2 WHERE id = $3 AND user_id = $4',
-    [nextShares.toNumber(), nextCostBasis.toNumber(), shareAccount.id, userId],
-  );
-  await applySharePrice(db, userId, shareAccount.id, nextShares.toNumber(), priceValue.toNumber());
+  await db.query('UPDATE share_details SET shares = $1, cost_basis = $2 WHERE account_id = $3', [
+    nextShares.toNumber(),
+    nextCostBasis.toNumber(),
+    shareAccount.id,
+  ]);
+  await applySharePrice(db, shareAccount.id, priceValue.toNumber());
 
   return { success: true, data: { transaction } };
 }
@@ -195,47 +205,43 @@ export async function buyShareWithinTransaction(
 export async function buyShare(
   input: z.infer<typeof ShareTradeSchema>,
 ): Promise<ActionResult<{ transaction: Transaction }>> {
-  const { db, userId } = await getSessionContext();
-  return db.transaction((tx) => buyShareWithinTransaction(tx, userId, input));
+  const { db } = await getSessionContext();
+  return db.transaction((tx) => buyShareWithinTransaction(tx, input));
 }
 
 /** Sell shares, crediting proceeds to the linked USD cash account. */
 export async function sellShare(
   input: z.infer<typeof ShareTradeSchema>,
 ): Promise<ActionResult<{ transaction: Transaction }>> {
-  const { db, userId } = await getSessionContext();
+  const { db } = await getSessionContext();
   const parsed = ShareTradeSchema.safeParse(input);
   if (!parsed.success) {
     return { success: false, error: parsed.error.issues[0]?.message ?? 'Invalid trade input' };
   }
-  const { shareAccountId, brokerageAccountId, quantity, price, fee, memo } = parsed.data;
+  const { shareAccountId, brokerageAccountId, quantity, price, memo } = parsed.data;
 
   return db.transaction(async (tx) => {
-    const shareLoad = await loadShareAccount(tx, userId, shareAccountId);
+    const shareLoad = await loadShareAccount(tx, shareAccountId);
     if (!shareLoad.success) return shareLoad;
     const shareAccount = shareLoad.data;
 
     if (shareAccount.brokerage_account_id !== brokerageAccountId) {
       return { success: false, error: 'This share account is not linked to the selected cash account' };
     }
-    if (!shareAccount.ticker) {
-      return { success: false, error: 'Share account ticker is missing' };
-    }
 
-    const cashLoad = await loadCashAccount(tx, userId, brokerageAccountId);
+    const cashLoad = await loadCashAccount(tx, brokerageAccountId);
     if (!cashLoad.success) return cashLoad;
     const brokerageAccount = cashLoad.data;
 
     const quantityValue = roundSharesDecimal(quantity);
-    const priceValue = new Decimal(price);
-    const feeValue = roundMoneyDecimal(fee);
+    const priceValue = roundSharePriceDecimal(price);
     const currentShares = new Decimal(shareAccount.shares);
 
     if (currentShares.lt(quantityValue)) {
       return { success: false, error: 'Insufficient shares' };
     }
 
-    const cashAmount = roundMoneyDecimal(quantityValue.mul(priceValue).minus(feeValue));
+    const cashAmount = roundMoneyDecimal(quantityValue.mul(priceValue));
     if (cashAmount.lte(0)) {
       return { success: false, error: 'Sell proceeds must be greater than 0' };
     }
@@ -255,42 +261,36 @@ export async function sellShare(
     const transaction = await one<Transaction>(
       tx,
       `INSERT INTO transactions
-         (user_id, type, amount, currency, metadata, from_account, to_account, memo,
-          share_ticker, share_quantity, share_price, fee, transaction_date)
-       VALUES ($1, $2, $3, 'USD', '{}'::jsonb, $4, $5, $6, $7, $8, $9, $10, CURRENT_DATE)
+         (type, amount, currency, metadata, from_account, to_account, memo,
+          share_ticker, share_quantity, share_price, transaction_date)
+       VALUES ($1, $2, 'USD', $3::jsonb, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
       [
-        userId,
         TransactionType.SHARE_SELL,
         cashAmount.toNumber(),
+        JSON.stringify(positionBefore(shareAccount)),
         shareAccount.id,
         brokerageAccount.id,
         normalizedMemo,
         shareAccount.ticker,
         quantityValue.toNumber(),
         priceValue.toNumber(),
-        feeValue.toNumber(),
+        localToday(),
       ],
       'Failed to create share sell transaction',
     );
 
-    await tx.query('UPDATE accounts SET balance = balance + $1 WHERE id = $2 AND user_id = $3', [
+    await tx.query('UPDATE accounts SET balance = balance + $1 WHERE id = $2', [
       cashAmount.toNumber(),
       brokerageAccount.id,
-      userId,
     ]);
 
-    await tx.query(
-      'UPDATE accounts SET shares = $1, cost_basis = $2 WHERE id = $3 AND user_id = $4',
-      [nextShares.toNumber(), nextCostBasis.toNumber(), shareAccount.id, userId],
-    );
-    await applySharePrice(
-      tx,
-      userId,
-      shareAccount.id,
+    await tx.query('UPDATE share_details SET shares = $1, cost_basis = $2 WHERE account_id = $3', [
       nextShares.toNumber(),
-      isCleared ? 0 : priceValue.toNumber(),
-    );
+      nextCostBasis.toNumber(),
+      shareAccount.id,
+    ]);
+    await applySharePrice(tx, shareAccount.id, priceValue.toNumber());
 
     return { success: true, data: { transaction } };
   });
@@ -299,32 +299,29 @@ export async function sellShare(
 interface RefreshCandidate {
   id: string;
   ticker: string;
-  shares: number;
 }
 
 /**
  * Pull live prices for every SHARE account and mark-to-market its balance.
  *
- * "Fresh" now means "already priced today" — `last_price_date` is a DATE (see
- * PLAN.md's day-granularity decision), so there is no sub-day staleness to
- * measure. `force` re-fetches regardless.
+ * "Fresh" means "already priced today" — `last_price_date` is a DATE, so there
+ * is no sub-day staleness to measure. `force` re-fetches regardless.
  */
 export async function refreshSharePrices(
   input?: { force?: boolean },
 ): Promise<ActionResult<{ updated: number; failed: string[]; freshSkipped: number }>> {
-  const { db, userId } = await getSessionContext();
+  const { db } = await getSessionContext();
   const force = Boolean(input?.force);
 
   const staleAccounts = await db.query<RefreshCandidate>(
-    `SELECT id, ticker, shares FROM accounts
-      WHERE user_id = $1 AND type = 'SHARE' AND ticker IS NOT NULL
-        AND ($2 OR last_price_date IS DISTINCT FROM CURRENT_DATE)`,
-    [userId, force],
+    `SELECT account_id AS id, ticker FROM share_details
+      WHERE ($1 OR last_price_date IS DISTINCT FROM $2::date)`,
+    [force, localToday()],
   );
   const totalShareAccounts = await one<{ count: number }>(
     db,
-    `SELECT count(*)::int AS count FROM accounts WHERE user_id = $1 AND type = 'SHARE' AND ticker IS NOT NULL`,
-    [userId],
+    'SELECT count(*)::int AS count FROM share_details',
+    [],
     'Failed to count share accounts',
   );
   const freshSkipped = totalShareAccounts.count - staleAccounts.rows.length;
@@ -336,11 +333,11 @@ export async function refreshSharePrices(
     return { success: true, data: { updated: 0, failed: [], freshSkipped } };
   }
 
-  const apiKey = await getApiKey(db, userId, 'finnhub');
+  const apiKey = await getApiKey(db, 'finnhub');
   let prices: Record<string, number>;
   try {
     prices = await fetchStockPrices(
-      staleAccounts.rows.map((a) => a.ticker.trim().toUpperCase()),
+      staleAccounts.rows.map((a) => a.ticker),
       apiKey,
     );
   } catch (error) {
@@ -351,13 +348,12 @@ export async function refreshSharePrices(
   let updated = 0;
 
   for (const account of staleAccounts.rows) {
-    const ticker = account.ticker.trim().toUpperCase();
-    const price = prices[ticker];
+    const price = prices[account.ticker];
     if (typeof price !== 'number') {
-      failed.push(ticker);
+      failed.push(account.ticker);
       continue;
     }
-    await applySharePrice(db, userId, account.id, account.shares, price);
+    await applySharePrice(db, account.id, price);
     updated += 1;
   }
 
@@ -383,17 +379,17 @@ const SetSharePriceSchema = z.object({
 export async function setSharePrice(
   input: z.infer<typeof SetSharePriceSchema>,
 ): Promise<ActionResult<{ balance: number }>> {
-  const { db, userId } = await getSessionContext();
+  const { db } = await getSessionContext();
   const parsed = SetSharePriceSchema.safeParse(input);
   if (!parsed.success) {
     return { success: false, error: parsed.error.issues[0]?.message ?? 'Invalid price' };
   }
 
   return db.transaction(async (tx) => {
-    const shareLoad = await loadShareAccount(tx, userId, parsed.data.accountId);
+    const shareLoad = await loadShareAccount(tx, parsed.data.accountId);
     if (!shareLoad.success) return shareLoad;
 
-    await applySharePrice(tx, userId, parsed.data.accountId, shareLoad.data.shares, parsed.data.price);
+    await applySharePrice(tx, parsed.data.accountId, parsed.data.price);
     const balance = roundMoneyDecimal(new Decimal(shareLoad.data.shares).mul(parsed.data.price));
     return { success: true, data: { balance: balance.toNumber() } };
   });

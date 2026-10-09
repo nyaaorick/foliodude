@@ -53,7 +53,6 @@ describe('updateAccount', () => {
     const id = await seedAccount(ctx, {
       type: 'SHARE',
       currency: 'USD',
-      brokerage: 'IBKR',
       ticker: 'AAPL',
       brokerage_account_id: brokerageId,
     });
@@ -62,20 +61,9 @@ describe('updateAccount', () => {
     );
   });
 
-  it('merges asset APY into auto_pay_config without dropping siblings', async () => {
-    const id = await seedAccount(ctx, {
-      type: 'ASSET',
-      auto_pay_config: { existing_key: 'kept' },
-    });
-    expect((await setAssetApy({ id, apy: 4.256 })).auto_pay_config).toEqual({
-      existing_key: 'kept',
-      asset_apy: 4.26,
-    });
-  });
-
-  it('sets asset APY when auto_pay_config is null', async () => {
+  it('stores asset APY rounded to 2 decimals', async () => {
     const id = await seedAccount(ctx, { type: 'ASSET' });
-    expect((await setAssetApy({ id, apy: 3 })).auto_pay_config).toEqual({ asset_apy: 3 });
+    expect((await setAssetApy({ id, apy: 4.256 })).apy).toBe(4.26);
   });
 
   it('rejects APY updates for non-asset accounts', async () => {
