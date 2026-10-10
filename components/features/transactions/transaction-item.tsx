@@ -6,6 +6,7 @@ import { deleteAction } from '@/lib/actions/delete-actions';
 import { AccountType } from '@/lib/types/accounts';
 import { getRewardCurrencyDefinition } from '@/lib/types/rewards';
 import { TransactionType, type TransactionWithReward } from '@/lib/types/transactions';
+import { formatCurrencyAmount, formatShares } from '@/lib/utils/account-balance-display';
 import { canDeleteTransactionType } from '@/lib/utils/delete-support';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -14,12 +15,6 @@ import {
   getTransactionDisplay,
   getLinkedAccountTargetId,
 } from '@/lib/utils/transaction-display';
-
-function formatCurrency(amount: number, currency: string) {
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(
-    amount,
-  );
-}
 
 function formatRewardAmount(amount: number) {
   return new Intl.NumberFormat('en-US', {
@@ -36,13 +31,6 @@ function formatDate(dateStr: string) {
   });
 }
 
-function formatShares(amount: number) {
-  return new Intl.NumberFormat('en-US', {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 6,
-  }).format(amount);
-}
-
 function formatShareMeta(transaction: TransactionWithReward) {
   if (
     transaction.type !== TransactionType.SHARE_BUY &&
@@ -56,7 +44,7 @@ function formatShareMeta(transaction: TransactionWithReward) {
       ? `${formatShares(transaction.share_quantity)} shares`
       : null,
     transaction.share_price !== null
-      ? `at ${formatCurrency(transaction.share_price, transaction.currency ?? 'USD')}`
+      ? `at ${formatCurrencyAmount(transaction.share_price, transaction.currency ?? 'USD')}`
       : null,
   ].filter(Boolean);
 
@@ -161,7 +149,7 @@ function getMileageMetaText(transaction: TransactionWithReward) {
       return null;
     }
 
-    return `Tax ${formatCurrency(taxAmount, taxCurrency)} via ${taxAccountName}`;
+    return `Tax ${formatCurrencyAmount(taxAmount, taxCurrency)} via ${taxAccountName}`;
   }
 
   return null;

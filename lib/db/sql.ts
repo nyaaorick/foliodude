@@ -51,8 +51,8 @@ export async function one<T>(
  */
 
 /** Postgres SQLSTATEs for a unique-constraint and a CHECK-constraint violation. */
-export const UNIQUE_VIOLATION = '23505';
-export const CHECK_VIOLATION = '23514';
+const UNIQUE_VIOLATION = '23505';
+const CHECK_VIOLATION = '23514';
 
 function hasSqlState(error: unknown, code: string): boolean {
   return (

@@ -10,16 +10,16 @@ export type Json =
   | { [key: string]: Json | undefined }
   | Json[]
 
-export type AccountTypeValue = 'ASSET' | 'LIABILITY' | 'AIRLINE_MILES' | 'SHARE'
+type AccountTypeValue = 'ASSET' | 'LIABILITY' | 'AIRLINE_MILES' | 'SHARE'
 
-export type AirlineProgramValue =
+type AirlineProgramValue =
   | 'ALASKA_AS'
   | 'KRISFLYER'
   | 'UNITED_MILEAGEPLUS'
   | 'AVIOS'
   | 'ASIA_MILES'
 
-export type TransactionTypeValue =
+type TransactionTypeValue =
   | 'EXPENSE'
   | 'INCOME'
   | 'TRANSFER'

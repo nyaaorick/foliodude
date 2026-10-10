@@ -20,7 +20,7 @@ import { rows } from './sql';
  */
 
 /** Bump when the envelope shape changes incompatibly. */
-export const SNAPSHOT_FORMAT_VERSION = 1;
+const SNAPSHOT_FORMAT_VERSION = 1;
 
 /**
  * Ledger tables, in FK-safe insert order — parents before children.

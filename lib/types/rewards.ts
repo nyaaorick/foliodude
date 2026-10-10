@@ -26,7 +26,7 @@ export const REWARD_CURRENCY_IDS = REWARD_CURRENCIES.map(
 ) as [RewardCurrencyId, ...RewardCurrencyId[]];
 
 export const REWARD_RULE_SOURCES = ['manual', 'imported', 'cloud'] as const;
-export type RewardRuleSource = (typeof REWARD_RULE_SOURCES)[number];
+type RewardRuleSource = (typeof REWARD_RULE_SOURCES)[number];
 
 export const REWARD_CAP_PERIODS = ['monthly', 'annual'] as const;
 export type RewardCapPeriod = (typeof REWARD_CAP_PERIODS)[number];

@@ -10,7 +10,7 @@ export interface DashboardAllocationSlice {
   color: string;
 }
 
-export interface DashboardDebtSummary {
+interface DashboardDebtSummary {
   label: 'Credit Card Debt';
   usd: number;
   grossDebtUsd: number;
@@ -22,7 +22,7 @@ export interface DashboardDebtSummary {
   }>;
 }
 
-export interface DashboardBreakdownAccount {
+interface DashboardBreakdownAccount {
   account_id: string;
   name: string;
   type: string;
@@ -45,7 +45,7 @@ export interface DashboardValuationInputs {
   mileage_rates: Record<string, number>;
 }
 
-export interface DashboardNetWorthPoint {
+interface DashboardNetWorthPoint {
   date: string;
   netWorthUsd: number;
 }
@@ -55,7 +55,7 @@ export interface DashboardMonthlyExpensePoint {
   [category: string]: number | string;
 }
 
-export interface DashboardTotals {
+interface DashboardTotals {
   assetsUsd: number;
   liabilitiesUsd: number;
   netWorthUsd: number;
@@ -71,7 +71,3 @@ export interface DashboardAnalytics {
   asOf: string;
 }
 
-export interface NetWorthSnapshotRow {
-  snapshot_date: string;
-  net_worth_usd: number;
-}

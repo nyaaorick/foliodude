@@ -75,6 +75,3 @@ export type CreateAccountInput = Pick<Account, 'type' | 'balance' | 'currency'> 
   deduct_from_brokerage?: boolean;
 };
 
-export type UpdateAccountInput = Partial<
-  Pick<Account, 'name' | 'balance' | 'credit_limit' | 'usd_per_10k_miles'>
->;

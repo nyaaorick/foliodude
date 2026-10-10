@@ -136,10 +136,9 @@ export async function createTransactionWithinTransaction(
  * Log an expense, and the reward it earns, as one atomic write.
  *
  * The expense, the balance decrement, the reward transaction and the reward
- * balance/stats update all commit together. Under the previous Supabase client
- * these were four separate round-trips, so a failure between them could leave
- * an expense with no matching reward, or a reward whose points were never
- * credited.
+ * balance/stats update commit together or not at all, so a failure between
+ * them cannot leave an expense with no matching reward, or points that were
+ * never credited.
  */
 export async function createTransaction(
   input: CreateExpenseInput,

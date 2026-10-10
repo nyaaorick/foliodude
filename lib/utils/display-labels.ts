@@ -6,7 +6,6 @@ import {
 } from '@/lib/types/mileage';
 import {
   REWARD_CURRENCIES,
-  type RewardCapPeriod,
   type RewardCurrencyDefinition,
   type RewardCurrencyId,
 } from '@/lib/types/rewards';
@@ -131,17 +130,6 @@ export function getTransactionTypeLabel(type: TransactionType): string {
       return 'Sell Share';
     default:
       return fail(`Unknown transaction type: ${String(type)}`);
-  }
-}
-
-export function getRewardCapPeriodLabel(period: RewardCapPeriod): string {
-  switch (period) {
-    case 'annual':
-      return 'Annual';
-    case 'monthly':
-      return 'Monthly';
-    default:
-      return fail(`Unknown reward cap period: ${String(period)}`);
   }
 }
 

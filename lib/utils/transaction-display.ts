@@ -1,4 +1,5 @@
 import { AccountType } from '@/lib/types/accounts';
+import { formatCurrencyAmount } from '@/lib/utils/account-balance-display';
 import {
   TransactionType,
   type CrossCurrencyTransferMetadata,
@@ -10,12 +11,6 @@ export interface TransactionDisplay {
   amountPrefix: '+' | '-';
   amountToneClassName: string;
   title: string;
-}
-
-function formatCurrency(amount: number, currency: string) {
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(
-    amount,
-  );
 }
 
 function getCrossCurrencyTransferMetadata(
@@ -67,17 +62,17 @@ export function getTransactionAmountLabel(
   if (transaction.type === TransactionType.TRANSFER) {
     const crossCurrencyMetadata = getCrossCurrencyTransferMetadata(transaction);
     if (crossCurrencyMetadata && transaction.to_account === accountId) {
-      return formatCurrency(
+      return formatCurrencyAmount(
         crossCurrencyMetadata.target_amount,
         crossCurrencyMetadata.target_currency,
       );
     }
   }
 
-  return formatCurrency(transaction.amount, transaction.currency ?? currency);
+  return formatCurrencyAmount(transaction.amount, transaction.currency ?? currency);
 }
 
-export function getTransferTargetAccountId(
+function getTransferTargetAccountId(
   transaction: Transaction,
   accountId: string,
 ): string | null {
