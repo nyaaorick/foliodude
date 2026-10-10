@@ -128,16 +128,18 @@ export function updateMileageRate(
     const { db } = await getSessionContext();
     const parsed = parseOrThrow(UpdateMileageRateSchema, input);
 
-    await loadMileageAccount(
-      db,
-      parsed.accountId,
-      'Mileage rates are only supported on airline mileage accounts',
-    );
+    await db.transaction(async (tx) => {
+      await loadMileageAccount(
+        tx,
+        parsed.accountId,
+        'Mileage rates are only supported on airline mileage accounts',
+      );
 
-    await db.query('UPDATE mileage_details SET usd_per_10k_miles = $1 WHERE account_id = $2', [
-      parsed.usdPer10kMiles,
-      parsed.accountId,
-    ]);
+      await tx.query('UPDATE mileage_details SET usd_per_10k_miles = $1 WHERE account_id = $2', [
+        parsed.usdPer10kMiles,
+        parsed.accountId,
+      ]);
+    });
 
     return parsed;
   });
@@ -159,16 +161,18 @@ export function updateMileageTransferRates(
     const transferRates = normalizeMileageTransferRates(mergedRates);
     validateTransferRates(transferRates);
 
-    await loadMileageAccount(
-      db,
-      parsed.accountId,
-      'Transfer rates are only supported on airline mileage accounts',
-    );
+    await db.transaction(async (tx) => {
+      await loadMileageAccount(
+        tx,
+        parsed.accountId,
+        'Transfer rates are only supported on airline mileage accounts',
+      );
 
-    await db.query('UPDATE mileage_details SET transfer_rates = $1::jsonb WHERE account_id = $2', [
-      JSON.stringify(transferRates),
-      parsed.accountId,
-    ]);
+      await tx.query('UPDATE mileage_details SET transfer_rates = $1::jsonb WHERE account_id = $2', [
+        JSON.stringify(transferRates),
+        parsed.accountId,
+      ]);
+    });
 
     return { accountId: parsed.accountId, rates: transferRates };
   });

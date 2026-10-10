@@ -19,17 +19,17 @@ export interface SessionContext {
 /**
  * The single choke point for the single-writer model (PLAN.md §5 Phase 4):
  * every ledger mutation in `lib/actions` runs inside `db.transaction()`, so
- * refusing to open one on a read-only device blocks them all. Reads go through
- * `db.query` and are untouched. A few writes also use `query` directly and so
- * are *not* guarded: the dashboard's daily snapshot row and the API keys
- * (device-local, intentional), and the reward/mileage rate and rule updates
- * (a known gap — they edit synced tables).
+ * refusing to open one on a read-only device blocks them all, including the
+ * reward/mileage rate and rule edits. Reads go through `db.query` and are
+ * untouched, as are the two device-local writes that use `query` directly: the
+ * dashboard's daily snapshot row (a read-only device must still render its
+ * dashboard; the next restore replaces it) and the API keys.
  *
  * Guarding here rather than in `getDb()` is deliberate: the sync engine holds
  * the raw handle, so restoring a downloaded snapshot — the one write a
  * read-only device *must* be able to perform — is not blocked by its own rule.
  */
-function guardWrites(db: PGlite): LedgerDb {
+export function guardWrites(db: PGlite): LedgerDb {
   const ledger = brandTransactions(db);
   return {
     query: ledger.query,
