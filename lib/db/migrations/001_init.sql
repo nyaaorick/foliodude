@@ -465,14 +465,28 @@ CREATE TABLE net_worth_snapshots (
 
 
 -- ── 12. device_secrets ──────────────────────────────────────────────────────
--- Bring-your-own-key API credentials, empty by default. Nothing ships with a
+-- Bring-your-own-key API credentials (and the one endpoint config that goes
+-- with them), empty by default. Nothing ships with a
 -- key; a row is something this user typed on this device.
 --
 -- SYNC  This table is device-local by construction: lib/db/backup.ts lists the
 -- tables it exports and this is not one of them, so a key can never reach Drive.
 
 CREATE TABLE device_secrets (
-  provider   TEXT        PRIMARY KEY CHECK (provider IN ('exchangerate', 'finnhub', 'gemini')),
+  provider   TEXT        PRIMARY KEY CHECK (provider IN ('exchangerate', 'finnhub', 'llm')),
   api_key    TEXT        NOT NULL CHECK (btrim(api_key) <> ''),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  -- The 'llm' provider is any OpenAI-compatible chat-completions endpoint, so it
+  -- needs an address and a model as well as a key. NULL for every other provider.
+  base_url   TEXT,
+  model      TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  CONSTRAINT device_secrets_endpoint_check CHECK (
+    CASE
+      WHEN provider = 'llm' THEN
+             COALESCE(base_url ~ '^https?://', false)
+         AND COALESCE(btrim(model) <> '', false)
+      ELSE base_url IS NULL AND model IS NULL
+    END
+  )
 );

@@ -69,7 +69,7 @@ export async function fetchStockPrices(
   }
 
   if (!apiKey) {
-    throw new Error('No Finnhub API key configured. Add one in Settings to enable price refresh.');
+    throw new Error('No Finnhub API key configured. Add one on the Lab page to enable price refresh.');
   }
 
   const prices: StockPriceMap = {};

@@ -147,17 +147,17 @@ describe('share actions', () => {
     expect(result).toEqual({ success: true, data: { updated: 1, failed: ['MSFT'], freshSkipped: 0 } });
   });
 
-  it('surfaces a Settings-pointing error when no Finnhub key is configured', async () => {
+  it('surfaces a key-setup error when no Finnhub key is configured', async () => {
     await seedShareSetup();
     mockGetApiKey.mockResolvedValue(null);
     mockFetchStockPrices.mockRejectedValue(
-      new Error('No Finnhub API key configured. Add one in Settings to enable price refresh.'),
+      new Error('No Finnhub API key configured. Add one on the Lab page to enable price refresh.'),
     );
 
     const result = await refreshSharePrices();
     expect(result).toEqual({
       success: false,
-      error: 'No Finnhub API key configured. Add one in Settings to enable price refresh.',
+      error: 'No Finnhub API key configured. Add one on the Lab page to enable price refresh.',
     });
   });
 

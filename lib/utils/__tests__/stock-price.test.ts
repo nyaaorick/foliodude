@@ -14,9 +14,9 @@ describe('fetchStockPrices', () => {
     vi.restoreAllMocks();
   });
 
-  it('throws a Settings-pointing error when no key is configured', async () => {
+  it('throws a key-setup error when no key is configured', async () => {
     await expect(fetchStockPrices(['AAPL'], null)).rejects.toThrow(
-      'Add one in Settings',
+      'Add one on the Lab page',
     );
     expect(global.fetch).not.toHaveBeenCalled();
   });

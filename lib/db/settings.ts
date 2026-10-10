@@ -11,7 +11,13 @@ import { maybeOne } from './sql';
  * does not export it), so a key never leaves the device.
  */
 
-export type ApiKeyProvider = 'exchangerate' | 'finnhub' | 'gemini';
+export type ApiKeyProvider = 'exchangerate' | 'finnhub' | 'llm';
+
+/** Where an OpenAI-compatible chat-completions API lives, and how to call it. */
+export interface LlmEndpoint {
+  baseUrl: string;
+  model: string;
+}
 
 export async function getApiKey(db: Queryable, provider: ApiKeyProvider): Promise<string | null> {
   const row = await maybeOne<{ api_key: string }>(
@@ -22,15 +28,36 @@ export async function getApiKey(db: Queryable, provider: ApiKeyProvider): Promis
   return row?.api_key ?? null;
 }
 
+/** The `llm` provider's full configuration, or `null` until the user has set it. */
+export interface LlmConfig extends LlmEndpoint {
+  apiKey: string;
+}
+
+export async function getLlmConfig(db: Queryable): Promise<LlmConfig | null> {
+  const row = await maybeOne<{ api_key: string; base_url: string; model: string }>(
+    db,
+    "SELECT api_key, base_url, model FROM device_secrets WHERE provider = 'llm'",
+  );
+  return row ? { apiKey: row.api_key, baseUrl: row.base_url, model: row.model } : null;
+}
+
+export async function getLlmEndpoint(db: Queryable): Promise<LlmEndpoint | null> {
+  const config = await getLlmConfig(db);
+  return config && { baseUrl: config.baseUrl, model: config.model };
+}
+
 export async function setApiKey(
   db: Queryable,
   provider: ApiKeyProvider,
   apiKey: string,
+  endpoint?: LlmEndpoint,
 ): Promise<void> {
   await db.query(
-    `INSERT INTO device_secrets (provider, api_key) VALUES ($1, $2)
-     ON CONFLICT (provider) DO UPDATE SET api_key = EXCLUDED.api_key, updated_at = now()`,
-    [provider, apiKey.trim()],
+    `INSERT INTO device_secrets (provider, api_key, base_url, model) VALUES ($1, $2, $3, $4)
+     ON CONFLICT (provider) DO UPDATE
+       SET api_key = EXCLUDED.api_key, base_url = EXCLUDED.base_url, model = EXCLUDED.model,
+           updated_at = now()`,
+    [provider, apiKey.trim(), endpoint?.baseUrl.trim().replace(/\/+$/, '') ?? null, endpoint?.model.trim() ?? null],
   );
 }
 

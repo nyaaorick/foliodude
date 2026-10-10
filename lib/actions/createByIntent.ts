@@ -5,7 +5,7 @@ import { getAccounts } from '@/lib/actions/account-read-actions';
 import { createTransaction } from '@/lib/actions/createTransaction';
 import { createTransfer } from '@/lib/actions/createTransfer';
 import { getSessionContext } from '@/lib/db/session';
-import { getApiKey } from '@/lib/db/settings';
+import { getLlmConfig, type LlmConfig } from '@/lib/db/settings';
 import { EXPENSE_CATEGORIES } from '@/lib/data/expense-categories';
 import {
   AccountType,
@@ -16,14 +16,9 @@ import { AIRLINE_PROGRAM_IDS } from '@/lib/types/mileage';
 import { localToday } from '@/lib/utils/local-date';
 import { REWARD_CURRENCY_IDS } from '@/lib/types/rewards';
 
-// No shipped credential (PLAN.md §1 / §7): the caller supplies a key from
-// Settings, sourced via lib/db/settings.ts's `apikey:gemini` row.
-const GEMINI_TEXT_MODEL = 'gemini-2.5-flash';
-const GEMINI_IMAGE_MODEL = 'gemini-2.5-flash';
-const GEMINI_TEXT_URL =
-  `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_TEXT_MODEL}:generateContent`;
-const GEMINI_IMAGE_URL =
-  `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_IMAGE_MODEL}:generateContent`;
+// No shipped credential (PLAN.md §1 / §7): the endpoint, model and key all come
+// from the user's own `llm` entry (Lab page -> lib/db/settings.ts). Any
+// OpenAI-compatible /chat/completions API works.
 
 const CREATE_INTENTS = [
   'create_account',
@@ -115,13 +110,6 @@ const CreateByIntentFromTextInputSchema = z.object({
   traceId: z.string().trim().min(1).optional(),
 });
 
-const CreateByIntentFromImageInputSchema = z.object({
-  imageBase64: z.string().trim().min(1),
-  mimeType: z.string().trim().regex(/^image\/[A-Za-z0-9.+-]+$/),
-  text: z.string().trim().min(1).optional(),
-  traceId: z.string().trim().min(1).optional(),
-});
-
 const AiAccountCandidateSchema = z.object({
   id: z.string().uuid(),
   name: z.string().trim().min(1),
@@ -138,42 +126,10 @@ const AiCreateAccountPayloadSchema = z.object({
   reward_currency: z.enum(REWARD_CURRENCY_IDS).nullable().default(null),
 });
 
-const GeminiGenerateContentResponseSchema = z.object({
-  candidates: z.array(z.object({
-    content: z.object({
-      parts: z.array(z.object({
-        text: z.string().optional(),
-      }).passthrough()).min(1),
-    }),
+const ChatCompletionResponseSchema = z.object({
+  choices: z.array(z.object({
+    message: z.object({ content: z.string() }),
   })).min(1),
-});
-
-const OptionalTrimmedNonEmptyStringSchema = z.preprocess(
-  (value) => (typeof value === 'string' && value.trim().length === 0 ? undefined : value),
-  z.string().trim().min(1).optional(),
-);
-
-const AiVisionVisibleFieldsSchema = z.object({
-  account_label_seen: OptionalTrimmedNonEmptyStringSchema,
-  card_program_label: OptionalTrimmedNonEmptyStringSchema,
-  merchant: OptionalTrimmedNonEmptyStringSchema,
-  amount: z.number().finite().gt(0).optional(),
-  currency: OptionalTrimmedNonEmptyStringSchema,
-  transaction_date: DateOnlySchema.optional(),
-  status: OptionalTrimmedNonEmptyStringSchema,
-  reference_id: OptionalTrimmedNonEmptyStringSchema,
-  location: OptionalTrimmedNonEmptyStringSchema,
-  installment_details: OptionalTrimmedNonEmptyStringSchema,
-  pending: z.boolean().optional(),
-  transaction_count: z.number().int().positive().optional(),
-}).passthrough();
-
-const AiVisionOcrResultSchema = z.object({
-  raw_text: z.string().default(''),
-  visible_fields: AiVisionVisibleFieldsSchema,
-  normalized_english_text: z.string().trim().min(1),
-  user_instruction: OptionalTrimmedNonEmptyStringSchema,
-  conflict_notes: OptionalTrimmedNonEmptyStringSchema,
 });
 
 const ResultAliasSchema = z.string().regex(/^[A-Za-z][A-Za-z0-9_-]*$/);
@@ -211,34 +167,33 @@ const StepPlanCreateTransferPayloadSchema = z
     path: ['toAccountId'],
   });
 
-export type CreateIntent = (typeof CREATE_INTENTS)[number];
-export type CreateByIntentMetadata = z.infer<typeof CreateByIntentMetadataSchema>;
-export type CreateByIntentInput = z.infer<typeof CreateByIntentInputSchema>;
+type CreateIntent = (typeof CREATE_INTENTS)[number];
+type CreateByIntentMetadata = z.infer<typeof CreateByIntentMetadataSchema>;
+type CreateByIntentInput = z.infer<typeof CreateByIntentInputSchema>;
 export type CreateByIntentFromTextInput = z.infer<typeof CreateByIntentFromTextInputSchema>;
-export type CreateByIntentFromImageInput = z.infer<typeof CreateByIntentFromImageInputSchema>;
 
-export type CreateByIntentPayloadMap = {
+type CreateByIntentPayloadMap = {
   create_account: z.infer<typeof CreateAccountPayloadSchema>;
   create_assets_expense: z.infer<typeof CreateAssetsExpensePayloadSchema>;
   create_expense: z.infer<typeof CreateExpensePayloadSchema>;
   create_transfer: z.infer<typeof CreateTransferPayloadSchema>;
 };
 
-export type CreateByIntentDataMap = {
+type CreateByIntentDataMap = {
   create_account: Awaited<ReturnType<typeof createAccount>>;
   create_assets_expense: Awaited<ReturnType<typeof createAssetsExpense>>;
   create_expense: Awaited<ReturnType<typeof createTransaction>>;
   create_transfer: Awaited<ReturnType<typeof createTransfer>>;
 };
 
-export type CreateByIntentEntityMap = {
+type CreateByIntentEntityMap = {
   create_account: 'account';
   create_assets_expense: 'transaction';
   create_expense: 'transaction';
   create_transfer: 'transaction';
 };
 
-export type CreateByIntentResult<TIntent extends CreateIntent = CreateIntent> = {
+type CreateByIntentResult<TIntent extends CreateIntent = CreateIntent> = {
   intent: TIntent;
   entity: CreateByIntentEntityMap[TIntent];
   entityId: string;
@@ -246,21 +201,10 @@ export type CreateByIntentResult<TIntent extends CreateIntent = CreateIntent> = 
   traceId: string | null;
 };
 
-export type CreateByIntentRunResult<TIntent extends CreateIntent = CreateIntent> =
+type CreateByIntentRunResult<TIntent extends CreateIntent = CreateIntent> =
   CreateByIntentResult<TIntent> & {
     steps: CreateByIntentResult[];
   };
-
-export type CreateByIntentFromImageResult = {
-  steps: CreateByIntentResult[];
-  ocrText: string;
-  normalizedText: string;
-  userInstruction: string | null;
-  conflictNotes: string | null;
-  noAction: 'ignore_transaction' | 'no_action' | null;
-  noActionReason: string | null;
-  traceId: string | null;
-};
 
 type AiTextIntent =
   | 'create_account'
@@ -277,42 +221,6 @@ export type CreateByIntentFromTextResult =
 type AiAccountCandidate = z.infer<typeof AiAccountCandidateSchema>;
 type StepIntent = (typeof AI_STEP_INTENTS)[number];
 type StepResult = CreateByIntentResult<StepIntent>;
-
-function normalizeImageOcrResult(input: {
-  ocr: z.infer<typeof AiVisionOcrResultSchema>;
-  fallbackDate: string;
-}) {
-  const transactionDate = input.ocr.visible_fields.transaction_date ?? input.fallbackDate;
-  const normalizedCurrency = input.ocr.visible_fields.currency
-    ? input.ocr.visible_fields.currency.trim().toUpperCase() === 'CNY'
-      ? 'CNH'
-      : input.ocr.visible_fields.currency.trim().toUpperCase()
-    : undefined;
-  const normalizedLines = input.ocr.normalized_english_text
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .filter((line) => !/^transaction_date:/i.test(line))
-    .filter((line) => !/^currency:/i.test(line));
-
-  if (normalizedCurrency) {
-    normalizedLines.push(`currency: ${normalizedCurrency}`);
-  }
-
-  normalizedLines.push(`transaction_date: ${transactionDate}`);
-
-  return {
-    ...input.ocr,
-    visible_fields: {
-      ...input.ocr.visible_fields,
-      ...(normalizedCurrency ? { currency: normalizedCurrency } : {}),
-      transaction_date: transactionDate,
-    },
-    normalized_english_text: normalizedLines.join('\n'),
-    user_instruction: input.ocr.user_instruction?.trim() || undefined,
-    conflict_notes: input.ocr.conflict_notes?.trim() || undefined,
-  };
-}
 
 function buildResult<TIntent extends CreateIntent>(
   intent: TIntent,
@@ -593,252 +501,50 @@ function defaultNoActionReply(userInput: string) {
     : 'Sorry, I cannot execute that request yet. Please provide a specific amount or a supported action.';
 }
 
-function buildImageOcrPrompt(input: {
-  fallbackDate: string;
-  userNote?: string;
-}): string {
-  const envelope = JSON.stringify({
-    fallback_date: input.fallbackDate,
-    user_note: input.userNote ?? '',
-  }, null, 2);
-
-  return [
-    'ROLE',
-    'You perform OCR and multimodal finance screenshot extraction.',
-    '',
-    'TASK',
-    'Read the screenshot and optional user note, then return exactly one JSON object.',
-    'Preserve visible finance facts and prepare separate planner-friendly outputs for image facts and optional user intent.',
-    'The screenshot text and user note may be Chinese or English.',
-    '',
-    'OUTPUT_FORMAT',
-    '- Return JSON only. No markdown or explanations.',
-    '- Output shape:',
-    '{',
-    '  "raw_text": "string",',
-    '  "visible_fields": {',
-    '    "screen_type": "single_transaction" | "balance_overview" | "account_overview" | "other",',
-    '    "account_label_seen": "string",',
-    '    "card_program_label": "string",',
-    '    "merchant": "string",',
-    '    "amount": number,',
-    '    "currency": "string",',
-    '    "transaction_date": "YYYY-MM-DD",',
-    '    "status": "string",',
-    '    "reference_id": "string",',
-    '    "location": "string",',
-    '    "installment_details": "string",',
-    '    "pending": boolean,',
-    '    "transaction_count": number',
-    '  },',
-    '  "normalized_english_text": "string",',
-    '  "user_instruction": "string",',
-    '  "conflict_notes": "string"',
-    '}',
-    '',
-    'HARD_RULES',
-    '- If multiple transactions are visible in the screenshot, set transaction_count greater than 1.',
-    '- Preserve all visible finance-related facts in raw_text and visible_fields.',
-    '- normalized_english_text must be English only.',
-    '- normalized_english_text must contain screenshot facts only.',
-    '- normalized_english_text must use one fact per line in "key: value" style.',
-    '- transaction_date must be date only in YYYY-MM-DD format.',
-    '- If the screenshot is mainly a balance page, add money page, card home page, or account overview instead of a single posted transaction, set screen_type to "balance_overview" or "account_overview".',
-    '- For balance/add money/account overview screens, preserve the displayed balance or stored value facts, and do not pretend they are transaction amount facts.',
-    '- If a clear transaction date is visible, normalize it to YYYY-MM-DD and put it in transaction_date.',
-    '- Ignore visible time of day. Do not output time.',
-    '- If no clear transaction date is visible, use fallback_date as transaction_date.',
-    '- Keep unknown fields out of visible_fields instead of inventing values.',
-    '- If user_note contains planning-relevant intent, write one compact English line in user_instruction.',
-    '- Omit user_instruction when user_note is empty or does not affect planning.',
-    '- Use conflict_notes only for concise conflicts between visible image facts and user_note instructions.',
-    '- Omit conflict_notes when there is no meaningful conflict.',
-    '',
-    'INPUT',
-    envelope,
-  ].join('\n');
-}
-
-function buildImagePlannerPrompt(input: {
-  accounts: AiAccountCandidate[];
-  normalizedText: string;
-  userInstruction?: string;
-  conflictNotes?: string;
-}): string {
-  const envelope = JSON.stringify({
-    accounts: input.accounts,
-    normalized_text: input.normalizedText,
-    ...(input.userInstruction
-      ? { user_instruction: input.userInstruction }
-      : {}),
-    ...(input.conflictNotes
-      ? { conflict_notes: input.conflictNotes }
-      : {}),
-  }, null, 2);
-
-  return [
-    'ROLE',
-    'You plan one or more finance create steps from normalized multimodal context.',
-    '',
-    'TASK',
-    'Read the input JSON and return exactly one JSON object with one or more sequential create steps.',
-    'The normalized_text contains only image-derived facts.',
-    'The optional user_instruction contains planner-relevant intent derived from the user note.',
-    'The optional conflict_notes highlight mismatches between image facts and user intent.',
-    '',
-    'ALLOWED_INTENTS',
-    ...AI_STEP_INTENTS.map((intent) => `- ${intent}`),
-    '',
-    'OUTPUT_FORMAT',
-    '- Return exactly one JSON object and nothing else. No markdown or explanations.',
-    '- Return one of these two shapes only.',
-    '- Action shape:',
-    '{',
-    '  "steps": [',
-    '    {',
-    '      "intent": "create_account" | "create_assets_expense" | "create_expense" | "create_transfer",',
-    '      "resultAlias": "alias_name",',
-    '      "payload": { ... }',
-    '    }',
-    '  ]',
-    '}',
-    '- No-action shape:',
-    '{',
-    '  "no_action": "ignore_transaction" | "no_action",',
-    '  "reason": "string"',
-    '}',
-    '',
-    'EXACT_PAYLOADS',
-    '- create_account payload must be exactly:',
-    '{',
-    '  "name": "string",',
-    '  "type": "ASSET" | "LIABILITY",',
-    '  "currency": "USD" | "AUD" | "NZD" | "GBP" | "HKD" | "CNH",',
-    '  "balance": number,',
-    '  "credit_limit": number,',
-    '  "reward_currency": "MR" | "UR" | "RC" | null',
-    '}',
-    '- create_assets_expense payload must be exactly:',
-    '{',
-    '  "accountId": "uuid" | "@alias_name",',
-    '  "amount": number,',
-    '  "memo": "string",',
-    '  "date": "YYYY-MM-DD, for example 2026-03-21"',
-    '}',
-    '- create_expense payload must be exactly:',
-    '{',
-    '  "accountId": "uuid" | "@alias_name",',
-    `  "category": ${EXPENSE_CATEGORIES.map((category) => `"${category}"`).join(' | ')},`,
-    '  "amount": number,',
-    '  "memo": "string",',
-    '  "date": "YYYY-MM-DD, for example 2026-03-21"',
-    '}',
-    '- create_transfer payload must be exactly:',
-    '{',
-    '  "fromAccountId": "uuid" | "@alias_name",',
-    '  "toAccountId": "uuid" | "@alias_name",',
-    '  "amount": number,',
-    '  "targetAmount": number,',
-    '  "memo": "string"',
-    '}',
-    '- Omit optional fields when unknown.',
-    '- Expense and asset expense dates must be date only in YYYY-MM-DD format.',
-    '',
-    'HARD_RULES',
-    '- You may return one step or multiple sequential steps.',
-    '- If user_instruction says they do not have the account yet, create the account first and assign resultAlias.',
-    '- Later dependent steps may reference a prior created account using @alias_name.',
-    '- Only create_account may define resultAlias in v1.',
-    '- Prefer LIABILITY accounts for credit card or charge card transactions when an existing liability account clearly matches.',
-    '- Use ASSET for debit card, bank account, cash wallet, or stored-value balance transactions.',
-    '- Direct spend on an ASSET account must use create_assets_expense.',
-    '- Direct spend on a LIABILITY account must use create_expense.',
-    '- A create_assets_expense alias reference must come from a prior create_account step whose type is ASSET.',
-    '- A create_expense alias reference must come from a prior create_account step whose type is LIABILITY.',
-    '- If no existing account matches and user_instruction requests account creation, plan create_account before downstream steps.',
-    '- If screen_type indicates a balance page, add money page, stored-value card home, or account overview, do not create_expense or create_assets_expense from the displayed balance.',
-    '- For those balance/account overview screens: if the screenshot clearly identifies a new card or account product, return exactly one create_account step and stop.',
-    '- For those balance/account overview screens: if no clear new account can be identified, return the no-action shape.',
-    '- Never return both create_account and a downstream expense step from a balance/account overview screenshot unless the image also clearly contains one explicit posted transaction.',
-    '- Never invent existing account IDs.',
-    '- If normalized_text includes transaction_date, copy that exact transaction_date string into the final expense or asset expense date.',
-    '- Ignore time of day and do not output time.',
-    '- Use Dining for restaurants, cafes, food delivery, bars, and food chains.',
-    '- Use Transit only for transportation, rideshare, fuel, tolls, parking, trains, buses, airlines, or metro operators.',
-    '- If the transaction status is declined, failed, reversed, refunded, cancelled, or otherwise not posted as a real charge, return the no-action shape instead of steps.',
-    '- If the screenshot context is a purchase and category is unclear, use "Other".',
-    '- If the request cannot be mapped to allowed intents, return invalid output instead of prose.',
-    '',
-    'INPUT',
-    envelope,
-  ].join('\n');
-}
-
-async function generateGeminiJsonText(input: {
-  url: string;
-  apiKey: string;
+/** One JSON-mode call to an OpenAI-compatible `/chat/completions` endpoint. */
+async function generateJsonText(input: {
+  config: LlmConfig;
   systemInstruction: string;
-  parts: Array<Record<string, unknown>>;
+  userPrompt: string;
 }): Promise<string> {
-  const response = await fetch(input.url, {
+  const response = await fetch(`${input.config.baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-goog-api-key': input.apiKey,
+      Authorization: `Bearer ${input.config.apiKey}`,
     },
     body: JSON.stringify({
-      system_instruction: {
-        parts: [
-          {
-            text: input.systemInstruction,
-          },
-        ],
-      },
-      contents: [
-        {
-          role: 'user',
-          parts: input.parts,
-        },
+      model: input.config.model,
+      temperature: 0,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: input.systemInstruction },
+        { role: 'user', content: input.userPrompt },
       ],
-      generationConfig: {
-        responseMimeType: 'application/json',
-        temperature: 0,
-      },
     }),
   });
 
   if (!response.ok) {
-    throw new Error(
-      `Gemini request failed with ${response.status}: ${await response.text()}`,
-    );
+    throw new Error(`LLM request failed with ${response.status}: ${await response.text()}`);
   }
 
-  const responseJson = GeminiGenerateContentResponseSchema.parse(await response.json());
-  return responseJson.candidates[0].content.parts
-    .map((part) => part.text ?? '')
-    .join('')
-    .trim();
+  return ChatCompletionResponseSchema.parse(await response.json()).choices[0].message.content.trim();
 }
 
 async function generateTextPlan(input: {
   text: string;
-  apiKey: string;
+  config: LlmConfig;
   accounts: AiAccountCandidate[];
   todayDate: string;
 }): Promise<TextPlannerOutput> {
-  const responseText = await generateGeminiJsonText({
-    url: GEMINI_TEXT_URL,
-    apiKey: input.apiKey,
-    systemInstruction: 'You are a deterministic finance text step planner.',
-    parts: [
-      {
-        text: buildTextPlannerPrompt({
-          accounts: input.accounts,
-          userInput: input.text,
-          todayDate: input.todayDate,
-        }),
-      },
-    ],
+  const responseText = await generateJsonText({
+    config: input.config,
+    systemInstruction: 'You are a deterministic finance text step planner. Respond with a single JSON object.',
+    userPrompt: buildTextPlannerPrompt({
+      accounts: input.accounts,
+      userInput: input.text,
+      todayDate: input.todayDate,
+    }),
   });
 
   const actionSchema = createStepPlanSchema(input.accounts);
@@ -852,71 +558,6 @@ async function generateTextPlan(input: {
   }
 
   return z.union([actionSchema, TextNoActionSchema]).parse(responseJson);
-}
-
-async function generateImageOcr(input: {
-  imageBase64: string;
-  mimeType: string;
-  apiKey: string;
-  fallbackDate: string;
-  userNote?: string;
-}) {
-  const responseText = await generateGeminiJsonText({
-    url: GEMINI_IMAGE_URL,
-    apiKey: input.apiKey,
-    systemInstruction: 'You are a deterministic OCR and multimodal screenshot normalizer.',
-    parts: [
-      {
-        inlineData: {
-          mimeType: input.mimeType,
-          data: input.imageBase64,
-        },
-      },
-      {
-        text: buildImageOcrPrompt({
-          fallbackDate: input.fallbackDate,
-          userNote: input.userNote,
-        }),
-      },
-    ],
-  });
-
-  return normalizeImageOcrResult({
-    ocr: AiVisionOcrResultSchema.parse(JSON.parse(responseText)),
-    fallbackDate: input.fallbackDate,
-  });
-}
-
-async function generateImagePlan(input: {
-  normalizedText: string;
-  apiKey: string;
-  accounts: AiAccountCandidate[];
-  userInstruction?: string;
-  conflictNotes?: string;
-}) {
-  const responseText = await generateGeminiJsonText({
-    url: GEMINI_TEXT_URL,
-    apiKey: input.apiKey,
-    systemInstruction: 'You are a deterministic multimodal finance step planner.',
-    parts: [
-      {
-        text: buildImagePlannerPrompt({
-          accounts: input.accounts,
-          normalizedText: input.normalizedText,
-          userInstruction: input.userInstruction,
-          conflictNotes: input.conflictNotes,
-        }),
-      },
-    ],
-  });
-
-  const actionSchema = createStepPlanSchema(input.accounts);
-  const noActionSchema = z.object({
-    no_action: z.enum(['ignore_transaction', 'no_action']),
-    reason: z.string().trim().min(1).optional(),
-  }).strict();
-
-  return z.union([actionSchema, noActionSchema]).parse(JSON.parse(responseText));
 }
 
 function buildAiAccountCandidates(
@@ -1028,7 +669,7 @@ function buildRunResult<TIntent extends StepIntent>(
   };
 }
 
-export async function createByIntent(
+async function createByIntent(
   input: CreateByIntentInput,
 ): Promise<CreateByIntentResult> {
   const { intent, payload, metadata } = CreateByIntentInputSchema.parse(input);
@@ -1061,16 +702,18 @@ export async function createByIntentFromText(
 ): Promise<CreateByIntentFromTextResult> {
   const { text, traceId } = CreateByIntentFromTextInputSchema.parse(input);
   const { db } = await getSessionContext();
-  const apiKey = await getApiKey(db, 'gemini');
-  if (!apiKey) {
-    throw new Error('No Gemini API key configured. Add one in Settings to enable AI-assisted entry.');
+  const config = await getLlmConfig(db);
+  if (!config) {
+    throw new Error(
+      'No LLM configured. Add an OpenAI-compatible base URL, model and API key on the Lab page.',
+    );
   }
 
   const accounts = await getAccounts();
   const aiAccounts = buildAiAccountCandidates(accounts, AI_ACCOUNT_TYPES);
   const plan = await generateTextPlan({
     text,
-    apiKey,
+    config,
     accounts: aiAccounts,
     todayDate: localToday(),
   });
@@ -1086,76 +729,8 @@ export async function createByIntentFromText(
   const steps = await executePlannedSteps({
     steps: plan.steps,
     traceId,
-    source: 'gemini-text',
+    source: 'llm-text',
   });
 
   return buildRunResult<AiTextIntent>(steps);
-}
-
-export async function createByIntentFromImage(
-  input: CreateByIntentFromImageInput,
-): Promise<CreateByIntentFromImageResult> {
-  const { imageBase64, mimeType, text, traceId } =
-    CreateByIntentFromImageInputSchema.parse(input);
-  const { db } = await getSessionContext();
-  const apiKey = await getApiKey(db, 'gemini');
-  if (!apiKey) {
-    throw new Error('No Gemini API key configured. Add one in Settings to enable AI-assisted entry.');
-  }
-
-  const accounts = await getAccounts();
-  const aiAccounts = buildAiAccountCandidates(accounts, AI_ACCOUNT_TYPES);
-  const fallbackDate = localToday();
-  const ocrResult = await generateImageOcr({
-    imageBase64,
-    mimeType,
-    apiKey,
-    fallbackDate,
-    userNote: text,
-  });
-
-  if ((ocrResult.visible_fields.transaction_count ?? 1) > 1) {
-    throw new Error('Image must contain exactly one transaction');
-  }
-
-  const normalizedText = ocrResult.normalized_english_text.trim();
-  const userInstruction = ocrResult.user_instruction ?? null;
-  const conflictNotes = ocrResult.conflict_notes ?? null;
-  const plan = await generateImagePlan({
-    normalizedText,
-    apiKey,
-    accounts: aiAccounts,
-    userInstruction: userInstruction ?? undefined,
-    conflictNotes: conflictNotes ?? undefined,
-  });
-
-  if ('no_action' in plan) {
-    return {
-      steps: [],
-      ocrText: ocrResult.raw_text,
-      normalizedText,
-      userInstruction,
-      conflictNotes,
-      noAction: plan.no_action,
-      noActionReason: plan.reason ?? null,
-      traceId: traceId ?? null,
-    };
-  }
-
-  const steps = await executePlannedSteps({
-    steps: plan.steps,
-    traceId,
-    source: 'gemini-image',
-  });
-
-  return {
-    steps,
-    ocrText: ocrResult.raw_text,
-    normalizedText,
-    userInstruction,
-    conflictNotes,
-    noAction: null,
-    noActionReason: null,
-    traceId: traceId ?? null,
-  };
 }

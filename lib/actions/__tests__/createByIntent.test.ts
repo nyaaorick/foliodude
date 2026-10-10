@@ -39,18 +39,23 @@ vi.mock('@/lib/db/session', () => ({
 }));
 
 vi.mock('@/lib/db/settings', () => ({
-  getApiKey: vi.fn().mockResolvedValue('test-gemini-key'),
+  getLlmConfig: vi.fn().mockResolvedValue({
+    apiKey: 'test-key',
+    baseUrl: 'https://llm.example.test/v1',
+    model: 'test-model',
+  }),
 }));
 
 import { createByIntentFromText } from '@/lib/actions/createByIntent';
 
 const CREATED_ACCOUNT_ID = '99999999-9999-4999-8999-999999999999';
 
-function makeGeminiResponse(steps: unknown[]) {
+// An OpenAI-style /chat/completions reply carrying the planner's JSON.
+function makeChatResponse(steps: unknown[]) {
   return {
     ok: true,
     json: vi.fn().mockResolvedValue({
-      candidates: [{ content: { parts: [{ text: JSON.stringify({ steps }) }] } }],
+      choices: [{ message: { content: JSON.stringify({ steps }) } }],
     }),
   } as unknown as Response;
 }
@@ -69,7 +74,7 @@ describe('createByIntent plan execution', () => {
 
   it('resolves @alias to the account created by an earlier step', async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
-      makeGeminiResponse([
+      makeChatResponse([
         {
           intent: 'create_account',
           resultAlias: 'new_account_1',
@@ -87,6 +92,16 @@ describe('createByIntent plan execution', () => {
     expect(mockCreateTransaction).toHaveBeenCalledWith(
       expect.objectContaining({ accountId: CREATED_ACCOUNT_ID, amount: 35.6 }),
     );
+
+    // The OpenAI-compatible contract: where it calls, how it authenticates,
+    // and that it asks for JSON.
+    const [url, init] = vi.mocked(fetch).mock.calls[0]!;
+    expect(url).toBe('https://llm.example.test/v1/chat/completions');
+    expect((init!.headers as Record<string, string>).Authorization).toBe('Bearer test-key');
+    expect(JSON.parse(init!.body as string)).toMatchObject({
+      model: 'test-model',
+      response_format: { type: 'json_object' },
+    });
     expect('steps' in result && result.steps.map((step) => step.intent)).toEqual([
       'create_account',
       'create_expense',
@@ -95,7 +110,7 @@ describe('createByIntent plan execution', () => {
 
   it('aborts before writing when a plan references an unknown alias', async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
-      makeGeminiResponse([
+      makeChatResponse([
         {
           intent: 'create_expense',
           payload: { accountId: '@missing_alias', category: 'Dining', amount: 10, date: '2026-03-21' },

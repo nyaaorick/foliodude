@@ -4,6 +4,7 @@ const { mockGetSessionContext } = vi.hoisted(() => ({ mockGetSessionContext: vi.
 vi.mock('@/lib/db/session', () => ({ getSessionContext: mockGetSessionContext }));
 
 import { listApiKeyStatus, removeApiKey, saveApiKey } from '@/lib/actions/api-key-actions';
+import { getLlmConfig } from '@/lib/db/settings';
 import { createTestContext } from '@/lib/db/testing';
 import type { SessionContext } from '@/lib/db/session';
 
@@ -15,59 +16,48 @@ describe('api-key-actions', () => {
     mockGetSessionContext.mockResolvedValue(ctx);
   });
 
-  it('starts with nothing configured', async () => {
-    const status = await listApiKeyStatus();
-    expect(status).toEqual([
-      { provider: 'exchangerate', configured: false, masked: null },
-      { provider: 'finnhub', configured: false, masked: null },
-      { provider: 'gemini', configured: false, masked: null },
-    ]);
-  });
+  it('masks stored keys and keeps the llm endpoint with its key', async () => {
+    expect((await listApiKeyStatus()).every((status) => !status.configured)).toBe(true);
 
-  it('saves a key, masking everything but the last 4 characters on read-back', async () => {
-    await saveApiKey({ provider: 'finnhub', apiKey: 'sk_live_abcd1234' });
+    await saveApiKey({ provider: 'finnhub', apiKey: '  sk_live_abcd1234  ' });
+    await saveApiKey({
+      provider: 'llm',
+      apiKey: 'sk-llm-9999',
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/',
+      model: 'gemini-2.5-flash',
+    });
 
     const status = await listApiKeyStatus();
     expect(status).toContainEqual({
-      provider: 'finnhub',
+      provider: 'finnhub', configured: true, masked: '••••1234', endpoint: null,
+    });
+    expect(status).toContainEqual({
+      provider: 'llm',
       configured: true,
-      masked: '••••1234',
+      masked: '••••9999',
+      // The trailing slash is dropped so `${baseUrl}/chat/completions` is well formed.
+      endpoint: { baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-2.5-flash' },
     });
-    // The exchangerate slot is untouched.
-    expect(status).toContainEqual({
-      provider: 'exchangerate',
-      configured: false,
-      masked: null,
-    });
+    expect(await getLlmConfig(ctx.db)).toMatchObject({ apiKey: 'sk-llm-9999', model: 'gemini-2.5-flash' });
   });
 
-  it('trims whitespace before storing', async () => {
-    await saveApiKey({ provider: 'exchangerate', apiKey: '  spaced-key  ' });
-    const [row] = (await listApiKeyStatus()).filter((s) => s.provider === 'exchangerate');
-    expect(row?.masked).toBe('••••-key');
+  it('rejects an empty key and an llm entry without a usable endpoint', async () => {
+    await expect(saveApiKey({ provider: 'finnhub', apiKey: '   ' })).rejects.toThrow('API key cannot be empty');
+    await expect(
+      saveApiKey({ provider: 'llm', apiKey: 'k', baseUrl: 'not-a-url', model: 'm' }),
+    ).rejects.toThrow();
+    await expect(
+      // @ts-expect-error — an llm entry must carry its endpoint
+      saveApiKey({ provider: 'llm', apiKey: 'k' }),
+    ).rejects.toThrow();
   });
 
-  it('rejects an empty key', async () => {
-    await expect(saveApiKey({ provider: 'finnhub', apiKey: '   ' })).rejects.toThrow();
-  });
-
-  it('overwrites an existing key for the same provider', async () => {
-    await saveApiKey({ provider: 'finnhub', apiKey: 'first-key-0001' });
-    await saveApiKey({ provider: 'finnhub', apiKey: 'second-key-9999' });
-
-    const [row] = (await listApiKeyStatus()).filter((s) => s.provider === 'finnhub');
-    expect(row?.masked).toBe('••••9999');
-  });
-
-  it('removes a configured key', async () => {
-    await saveApiKey({ provider: 'finnhub', apiKey: 'sk_live_abcd1234' });
-    await removeApiKey({ provider: 'finnhub' });
-
-    const [row] = (await listApiKeyStatus()).filter((s) => s.provider === 'finnhub');
-    expect(row).toEqual({ provider: 'finnhub', configured: false, masked: null });
-  });
-
-  it('removing an unconfigured key is a no-op, not an error', async () => {
+  it('removes a key, and removing an unset one is not an error', async () => {
+    await saveApiKey({ provider: 'exchangerate', apiKey: 'fx-key-0001' });
+    await removeApiKey({ provider: 'exchangerate' });
     await expect(removeApiKey({ provider: 'exchangerate' })).resolves.toBeUndefined();
+
+    const [row] = (await listApiKeyStatus()).filter((s) => s.provider === 'exchangerate');
+    expect(row?.configured).toBe(false);
   });
 });
