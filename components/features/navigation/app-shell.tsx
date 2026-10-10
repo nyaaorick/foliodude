@@ -1,15 +1,8 @@
-import { lazy, Suspense } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import type { LucideIcon } from 'lucide-react';
 import { FlaskConical, LayoutGrid, Mail, RefreshCw, WalletCards } from 'lucide-react';
 import { getWriter, isWritable } from '@/lib/sync/engine';
 import { cn } from '@/lib/utils';
-
-const NoticeDialog = lazy(() =>
-  import('@/components/features/notice/notice-dialog').then(
-    (module) => ({ default: module.NoticeDialog }),
-  ),
-);
 
 interface NavItem {
   href: string;
@@ -147,10 +140,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     // 100dvh rather than 100vh: iOS Safari's collapsing URL bar makes vh lie.
     <div className="min-h-[100dvh]">
-      <Suspense fallback={null}>
-        <NoticeDialog />
-      </Suspense>
-
       <SideRail pathname={pathname} />
       <BottomTabBar pathname={pathname} />
 
