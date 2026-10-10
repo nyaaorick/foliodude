@@ -131,7 +131,7 @@ describe('createAccount', () => {
         initial_price: 100,
         deduct_from_brokerage: true,
       }),
-    ).rejects.toThrow('Insufficient cash balance');
+    ).rejects.toThrow('Insufficient balance');
 
     // No orphaned SHARE row — the whole transaction rolled back.
     const { rows } = await ctx.db.query<{ n: number }>("SELECT count(*)::int AS n FROM accounts WHERE type = 'SHARE'");

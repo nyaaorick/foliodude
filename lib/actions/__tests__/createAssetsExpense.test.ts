@@ -63,6 +63,17 @@ describe('createAssetsExpense', () => {
     expect(await allTransactions(ctx.db)).toHaveLength(0);
   });
 
+  it('refuses to overdraw cash and leaves the ledger untouched', async () => {
+    const accountId = await seedAccount(ctx, { type: 'ASSET', currency: 'USD', balance: 10 });
+
+    await expect(
+      createAssetsExpense({ accountId, amount: 10.01, date: DATE }),
+    ).rejects.toThrow('Insufficient balance');
+
+    expect(await allTransactions(ctx.db)).toHaveLength(0);
+    expect((await getAccount(ctx.db, accountId)).balance).toBe(10);
+  });
+
   it('rejects invalid amount', async () => {
     const accountId = await seedAccount(ctx, { type: 'ASSET' });
 

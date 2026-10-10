@@ -129,7 +129,7 @@ on static hosting).
 - [x] Integrate `@electric-sql/pglite` with IndexedDB persistence (`idb://foliodude`) — `lib/db/client.ts`. UTC pinned explicitly (`SET TIME ZONE 'UTC'`); PGlite otherwise inherits the host timezone.
 - [x] Port `supabase/migrations/*.sql` to `lib/db/migrations/*.sql` with a `schema_version` table and an idempotent runner (`lib/db/migrate.ts`). Schema also switched from `TIMESTAMPTZ` to plain `DATE` throughout (`transaction_date`, `updated_at`, …) — a ledger entry belongs to a day, not an instant, and this removes timezone handling from the app entirely. Added `local_identity` (mints a device-local user id pre-auth) and `local_settings` (BYOK keys + future manual valuations).
 - [x] Refactor all 14 files in `lib/actions/*.ts` into direct PGlite queries via `db.transaction()`, removing `'use server'`, `next/cache`, and every `@/lib/supabase/server` import. Multi-step writes that were separate round-trips under Supabase (buy-share, create-account-with-initial-position, redeem-mileage-flight-with-tax-expense) are now atomic — a failure partway rolls back the whole write instead of leaving a partial ledger entry. `lib/actions` is fully out of the `tsconfig.json` quarantine; `npm run compile` is clean project-wide.
-- [x] Restored all quarantined test files against real in-memory PGlite (`lib/db/testing.ts`) instead of a mocked query builder — the CHECK constraints in `001_init.sql` now actually execute in tests. 34 files / 168 tests passing in ~38s (down from ~270s). Each file boots one migrated PGlite and `createTestContext()` truncates it between tests, instead of booting a fresh WASM Postgres per test; with that cost gone, files run in parallel. `createByIntent` is covered by two tests of its own risk (alias resolution, unknown-alias abort); the live-model smoke/diagnostics/fuzz files and the stale `scripts/debug-image-ocr.js` were deleted.
+- [x] Restored all quarantined test files against real in-memory PGlite (`lib/db/testing.ts`) instead of a mocked query builder — the CHECK constraints in `001_init.sql` now actually execute in tests. 35 files / 171 tests passing in ~45s (down from ~270s). Each file boots one migrated PGlite and `createTestContext()` truncates it between tests, instead of booting a fresh WASM Postgres per test; with that cost gone, files run in parallel. `createByIntent` is covered by two tests of its own risk (alias resolution, unknown-alias abort); the live-model smoke/diagnostics/fuzz files and the stale `scripts/debug-image-ocr.js` were deleted.
 - [x] **No shipped credentials, applied**: `lib/utils/fx-rates.ts` / `stock-price.ts` no longer read `process.env`; both are pure functions taking `apiKey: string | null`. `lib/db/settings.ts` + `lib/actions/api-key-actions.ts` are the BYOK store (`local_settings` under `apikey:<provider>`, masked on read-back), covering `exchangerate`, `finnhub`, and `gemini`. **Found and removed a hardcoded, committed Gemini API key** in `createByIntent.ts` (present since the initial commit) — the working tree is fixed, but the key is still in git history and should be rotated.
 - [ ] **Local export / import** — dump to a file via the Download API (extension) and a Blob link (PWA); restore by file picker. This closes the iOS eviction risk (§2) and must land before the app is used for real data. Not started.
 - [ ] Manual FX rate / share price entry UI (§7's "user can correct the API-fetched value" design). `setSharePrice` exists at the action layer (`lib/actions/share-actions.ts`) and is tested; there is no UI yet, and FX has no persistence layer for a fetched-vs-overridden value yet — only the live 1:1-fallback fetch.
@@ -468,6 +468,18 @@ plausible guess.
 corrupt or lose data — snapshot round-trips, destructive deletes, constraint
 interactions. Not what the typechecker already proves, and not layout. Tests run
 against real in-memory PGlite so the CHECK constraints actually execute.
+
+**Ledger writes have one shape.** A balance changes only through
+`adjustBalance` / `adjustRewardBalance` (`lib/db/ledger.ts`): SQL-relative, with
+the sign carried by the delta, never a value read earlier and written back. A
+transaction row is created only by `insertTransaction`. Both take a `Tx` — a
+handle only `db.transaction()` produces (`lib/db/tx.ts`) — so a ledger write
+cannot compile outside a transaction. Inside an action every failure is a
+`throw` (a returned failure would *commit* the half-written entry); only the
+exported functions the UI reads as `ActionResult` convert it, once, with
+`toActionResult` (`lib/actions/result.ts`). Cash cannot be overdrawn: that is a
+schema CHECK, and `adjustBalance` turns its violation into "Insufficient
+balance", so no action re-implements the check.
 
 **Scope and token economy.** Work stays inside the requested phase; out-of-scope
 problems are reported, not fixed uninvited. Tradeoffs are measured before they

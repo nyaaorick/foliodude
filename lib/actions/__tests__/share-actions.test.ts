@@ -69,7 +69,7 @@ describe('share actions', () => {
       price: 150,
     });
 
-    expect(result).toEqual({ success: false, error: 'Insufficient cash balance' });
+    expect(result).toEqual({ success: false, error: 'Insufficient balance' });
     // No partial writes on a rejected trade.
     expect((await getAccount(ctx.db, brokerageId)).balance).toBe(10_000);
     expect((await getAccount(ctx.db, shareId)).shares).toBe(0);

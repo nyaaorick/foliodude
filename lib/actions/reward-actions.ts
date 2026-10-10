@@ -1,7 +1,7 @@
-import Decimal from 'decimal.js';
 import { z } from 'zod';
 import { getCloudRewardRuleSet } from '@/lib/data/cloud-rules';
 import { getSessionContext } from '@/lib/db/session';
+import { adjustRewardBalance, insertTransaction, normalizeMemo } from '@/lib/db/ledger';
 import { one, rows } from '@/lib/db/sql';
 import type { Queryable } from '@/lib/db/session';
 import type { RewardRateRow } from '@/lib/types/database';
@@ -54,7 +54,6 @@ interface RewardAccountRow {
   id: string;
   type: string;
   reward_currency: string | null;
-  reward_balance: number;
   reward_rules: RewardRule[];
 }
 
@@ -64,7 +63,7 @@ async function requireRewardAccount(
 ): Promise<RewardAccountRow> {
   const account = await one<RewardAccountRow>(
     db,
-    'SELECT id, type, reward_currency, reward_balance, reward_rules FROM accounts_flat WHERE id = $1',
+    'SELECT id, type, reward_currency, reward_rules FROM accounts_flat WHERE id = $1',
     [accountId],
     'Account not found',
   );
@@ -129,42 +128,23 @@ export async function createRewardTransaction(
   return db.transaction(async (tx) => {
     const account = await requireRewardAccount(tx, normalizedInput.accountId);
     const rewardCurrency = requireRewardCurrency(account);
-    const currentBalance = new Decimal(account.reward_balance);
-    const amount = new Decimal(normalizedInput.amount);
-
-    if (normalizedInput.type === TransactionType.REWARD_REDEEM && currentBalance.lt(amount)) {
-      throw new Error('Insufficient reward balance');
-    }
-
-    const nextRewardBalance =
-      normalizedInput.type === TransactionType.REWARD_TRANSFER_IN
-        ? currentBalance.plus(amount).toNumber()
-        : currentBalance.minus(amount).toNumber();
-    const normalizedMemo = normalizedInput.memo?.trim() ? normalizedInput.memo.trim() : null;
     const isRedeem = normalizedInput.type === TransactionType.REWARD_REDEEM;
 
-    const transaction = await one<Transaction>(
-      tx,
-      `INSERT INTO transactions
-         (type, amount, reward_currency, metadata, from_account, to_account, memo, transaction_date)
-       VALUES ($1, $2, $3, '{}'::jsonb, $4, $5, $6, $7)
-       RETURNING *`,
-      [
-        normalizedInput.type,
-        normalizedInput.amount,
-        rewardCurrency,
-        isRedeem ? normalizedInput.accountId : null,
-        isRedeem ? null : normalizedInput.accountId,
-        normalizedMemo,
-        normalizedInput.date,
-      ],
-      'Failed to create reward transaction',
-    );
+    const transaction = await insertTransaction(tx, {
+      type: normalizedInput.type,
+      amount: normalizedInput.amount,
+      reward_currency: rewardCurrency,
+      from_account: isRedeem ? normalizedInput.accountId : null,
+      to_account: isRedeem ? null : normalizedInput.accountId,
+      memo: normalizeMemo(normalizedInput.memo),
+      transaction_date: normalizedInput.date,
+    });
 
-    await tx.query('UPDATE liability_details SET reward_balance = $1 WHERE account_id = $2', [
-      nextRewardBalance,
+    await adjustRewardBalance(
+      tx,
       normalizedInput.accountId,
-    ]);
+      isRedeem ? -normalizedInput.amount : normalizedInput.amount,
+    );
 
     return { transaction };
   });

@@ -82,7 +82,23 @@ Historical baggage is a cost paid every time someone reads the repo.
 - Report faithfully: if something is untested on real hardware, say that
   plainly rather than implying it works.
 
-## 6. Show the user the app after every phase
+## 6. Ledger write conventions
+
+- Change a balance only with `adjustBalance` / `adjustRewardBalance`
+  (`lib/db/ledger.ts`). They are SQL-relative and take a signed delta — the
+  change to the stored column. Never read a balance, compute in JS, and write
+  the absolute value back.
+- Create transaction rows only with `insertTransaction`; trim memos with
+  `normalizeMemo`. No hand-written `INSERT INTO transactions`.
+- Ledger writes take a `Tx` (`lib/db/tx.ts`), which only `db.transaction()`
+  yields. Do not widen a write helper's parameter back to `Queryable`.
+- Inside actions, `throw`. `db.transaction()` commits on a return and rolls back
+  only on a throw. Convert to `ActionResult` at the exported boundary with
+  `toActionResult`, never inside a transaction.
+- Do not add a JS balance precheck; the schema CHECK is the single rule and
+  `adjustBalance` names the failure.
+
+## 7. Show the user the app after every phase
 
 A phase is not done at "typecheck passes and tests are green" — those prove the
 code compiles and the logic holds, not that a human looking at the app would see

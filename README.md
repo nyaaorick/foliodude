@@ -82,7 +82,7 @@ assets/globals.css single Tailwind entry, shared by both targets
 
 Phase 1 (build tooling) and Phase 2 (local database layer) are done: every
 file in `lib/actions/` runs directly against PGlite inside a transaction, with
-168 tests passing against a real in-memory database (not a mocked query
+171 tests passing against a real in-memory database (not a mocked query
 builder). `npm run compile` is clean across the whole project.
 
 Phase 3 (UI) is done: `pages/*.tsx` read real data through `useLiveQuery`, and

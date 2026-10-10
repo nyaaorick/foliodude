@@ -1,7 +1,8 @@
 import type { PGlite } from '@electric-sql/pglite';
 
 import { createMemoryDb } from './client';
-import type { SessionContext } from './session';
+import type { Queryable, SessionContext } from './session';
+import { brandTransactions } from './tx';
 
 // Booting a WASM Postgres and running migrations dominates test time, so each
 // test file boots one (vitest isolates modules per file) and every call hands
@@ -15,7 +16,7 @@ let shared: PGlite | null = null;
  * CHECK constraints in 001_init actually execute — a malformed reward row fails
  * the test instead of being silently accepted by a mock.
  */
-export async function createTestContext(): Promise<SessionContext & { db: PGlite }> {
+export async function createTestContext(): Promise<SessionContext> {
   shared ??= await createMemoryDb();
   const tables = await shared.query<{ tablename: string }>(
     `SELECT tablename FROM pg_tables
@@ -24,7 +25,7 @@ export async function createTestContext(): Promise<SessionContext & { db: PGlite
   await shared.exec(
     `TRUNCATE ${tables.rows.map((row) => row.tablename).join(', ')} RESTART IDENTITY CASCADE`,
   );
-  return { db: shared };
+  return { db: brandTransactions(shared) };
 }
 
 type AccountSeed = {
@@ -48,7 +49,7 @@ function jsonParam(value: unknown): unknown {
 }
 
 async function insertRow(
-  db: PGlite,
+  db: Queryable,
   table: string,
   row: Record<string, unknown>,
 ): Promise<string> {
@@ -68,7 +69,7 @@ async function insertRow(
  * to the type's details table (`reward_balance`, `ticker`, …) are routed there.
  */
 export async function seedAccount(
-  { db }: SessionContext,
+  { db }: { db: Queryable },
   seed: AccountSeed = {},
 ): Promise<string> {
   const row: Record<string, unknown> = {
@@ -102,14 +103,14 @@ export async function seedAccount(
 }
 
 /** Every transaction, oldest first — the order assertions read most naturally in. */
-export async function allTransactions(db: PGlite): Promise<Record<string, unknown>[]> {
+export async function allTransactions(db: Queryable): Promise<Record<string, unknown>[]> {
   const result = await db.query<Record<string, unknown>>(
     'SELECT * FROM transactions ORDER BY seq',
   );
   return result.rows;
 }
 
-export async function getAccount(db: PGlite, id: string): Promise<Record<string, unknown>> {
+export async function getAccount(db: Queryable, id: string): Promise<Record<string, unknown>> {
   const result = await db.query<Record<string, unknown>>(
     'SELECT * FROM accounts_flat WHERE id = $1',
     [id],

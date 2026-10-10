@@ -1,14 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
 import { buildSnapshot, restoreSnapshot } from '@/lib/db/backup';
+import { createMemoryDb } from '@/lib/db/client';
 import { setApiKey } from '@/lib/db/settings';
-import { createTestContext, seedAccount } from '@/lib/db/testing';
+import { seedAccount } from '@/lib/db/testing';
 
 const WRITER = { deviceId: 'device-a', deviceName: 'Mac · Web' };
 
 describe('snapshot round-trip', () => {
   it('restores the ledger onto a different device and never carries API keys', async () => {
-    const source = await createTestContext();
+    // Two separate databases: the whole point is a different device.
+    const source = { db: await createMemoryDb() };
 
     // Self-referencing FKs are the case a bulk insert gets wrong, so the
     // fixture includes both: a share position pointing at its brokerage, and a
@@ -52,7 +54,7 @@ describe('snapshot round-trip', () => {
     expect(JSON.stringify(snapshot)).not.toContain('secret-key-1234');
 
     // A second device with its own pre-existing API key.
-    const target = await createTestContext();
+    const target = { db: await createMemoryDb() };
     await setApiKey(target.db, 'finnhub', 'target-key-9999');
 
     await restoreSnapshot(target.db, snapshot);

@@ -1,4 +1,3 @@
-import Decimal from 'decimal.js';
 import { z } from 'zod';
 import { createTransactionWithinTransaction } from '@/lib/actions/createTransaction';
 import {
@@ -6,6 +5,7 @@ import {
   getMileageTransferRate,
   normalizeMileageTransferRates,
 } from '@/lib/data/mileage-transfer-rates';
+import { adjustBalance, adjustRewardBalance, insertTransaction, normalizeMemo } from '@/lib/db/ledger';
 import { getSessionContext } from '@/lib/db/session';
 import type { Queryable } from '@/lib/db/session';
 import { one, rows } from '@/lib/db/sql';
@@ -21,8 +21,7 @@ import {
 } from '@/lib/types/mileage';
 import { TransactionType, type Transaction } from '@/lib/types/transactions';
 import { normalizeMoneyAmount } from '@/lib/utils/financial-analytics';
-
-type ActionResult<T> = { success: true; data: T } | { success: false; error: string };
+import { parseOrThrow, toActionResult, type ActionResult } from './result';
 
 const UpdateMileageRateSchema = z.object({
   accountId: z.string().uuid(),
@@ -80,7 +79,6 @@ interface MileageAccountRow {
   id: string;
   name: string;
   type: AccountType;
-  balance: number;
   airline_program: AirlineProgram | null;
   transfer_rates: unknown;
 }
@@ -90,7 +88,6 @@ interface SourceAccountRow {
   name: string;
   type: AccountType;
   reward_currency: RewardCurrencyId | null;
-  reward_balance: number;
 }
 
 interface TaxAccountRow {
@@ -100,99 +97,81 @@ interface TaxAccountRow {
   currency: string;
 }
 
-function parseInput<T>(schema: z.ZodSchema<T>, input: unknown): ActionResult<T> {
-  const parsed = schema.safeParse(input);
-  if (!parsed.success) {
-    return { success: false, error: parsed.error.issues[0]?.message ?? 'Invalid input' };
-  }
-  return { success: true, data: parsed.data };
-}
-
-function validateTransferRates(rates: MileageTransferRateMap): string | null {
+function validateTransferRates(rates: MileageTransferRateMap): void {
   for (const [key, value] of Object.entries(rates)) {
-    if (!isRewardCurrencyId(key)) return `Unsupported reward currency: ${key}`;
+    if (!isRewardCurrencyId(key)) throw new Error(`Unsupported reward currency: ${key}`);
     if (!Number.isInteger(value) || value < 0) {
-      return `Transfer rate for ${key} must be a non-negative integer`;
+      throw new Error(`Transfer rate for ${key} must be a non-negative integer`);
     }
   }
-  return null;
 }
 
 async function loadMileageAccount(
   db: Queryable,
   accountId: string,
   invalidTypeError: string,
-): Promise<ActionResult<MileageAccountRow>> {
-  try {
-    const account = await one<MileageAccountRow>(
-      db,
-      'SELECT id, name, type, balance, airline_program, transfer_rates FROM accounts_flat WHERE id = $1',
-      [accountId],
-      'Mileage account not found',
-    );
-    if (account.type !== AccountType.AIRLINE_MILES) {
-      return { success: false, error: invalidTypeError };
-    }
-    return { success: true, data: account };
-  } catch (error) {
-    return { success: false, error: error instanceof Error ? error.message : String(error) };
-  }
+): Promise<MileageAccountRow> {
+  const account = await one<MileageAccountRow>(
+    db,
+    'SELECT id, name, type, airline_program, transfer_rates FROM accounts_flat WHERE id = $1',
+    [accountId],
+    'Mileage account not found',
+  );
+  if (account.type !== AccountType.AIRLINE_MILES) throw new Error(invalidTypeError);
+  return account;
 }
 
-export async function updateMileageRate(
+export function updateMileageRate(
   input: UpdateMileageRateInput,
 ): Promise<ActionResult<UpdateMileageRateInput>> {
-  const { db } = await getSessionContext();
-  const parsed = parseInput(UpdateMileageRateSchema, input);
-  if (!parsed.success) return parsed;
+  return toActionResult(async () => {
+    const { db } = await getSessionContext();
+    const parsed = parseOrThrow(UpdateMileageRateSchema, input);
 
-  const mileageAccount = await loadMileageAccount(
-    db,
-    parsed.data.accountId,
-    'Mileage rates are only supported on airline mileage accounts',
-  );
-  if (!mileageAccount.success) return mileageAccount;
+    await loadMileageAccount(
+      db,
+      parsed.accountId,
+      'Mileage rates are only supported on airline mileage accounts',
+    );
 
-  await db.query('UPDATE mileage_details SET usd_per_10k_miles = $1 WHERE account_id = $2', [
-    parsed.data.usdPer10kMiles,
-    parsed.data.accountId,
-  ]);
+    await db.query('UPDATE mileage_details SET usd_per_10k_miles = $1 WHERE account_id = $2', [
+      parsed.usdPer10kMiles,
+      parsed.accountId,
+    ]);
 
-  return { success: true, data: parsed.data };
+    return parsed;
+  });
 }
 
-export async function updateMileageTransferRates(
+export function updateMileageTransferRates(
   input: UpdateMileageTransferRatesInput,
 ): Promise<ActionResult<UpdateMileageTransferRatesInput>> {
-  const { db } = await getSessionContext();
-  const parsed = parseInput(UpdateMileageTransferRatesSchema, input);
-  if (!parsed.success) return parsed;
+  return toActionResult(async () => {
+    const { db } = await getSessionContext();
+    const parsed = parseOrThrow(UpdateMileageTransferRatesSchema, input);
 
-  const mergedRates: MileageTransferRateMap = { ...getDefaultMileageTransferRates() };
-  for (const [key, value] of Object.entries(parsed.data.rates)) {
-    if (!isRewardCurrencyId(key)) {
-      return { success: false, error: `Unsupported reward currency: ${key}` };
+    const mergedRates: MileageTransferRateMap = { ...getDefaultMileageTransferRates() };
+    for (const [key, value] of Object.entries(parsed.rates)) {
+      if (!isRewardCurrencyId(key)) throw new Error(`Unsupported reward currency: ${key}`);
+      mergedRates[key] = value;
     }
-    mergedRates[key] = value;
-  }
 
-  const transferRates = normalizeMileageTransferRates(mergedRates);
-  const validationError = validateTransferRates(transferRates);
-  if (validationError) return { success: false, error: validationError };
+    const transferRates = normalizeMileageTransferRates(mergedRates);
+    validateTransferRates(transferRates);
 
-  const mileageAccount = await loadMileageAccount(
-    db,
-    parsed.data.accountId,
-    'Transfer rates are only supported on airline mileage accounts',
-  );
-  if (!mileageAccount.success) return mileageAccount;
+    await loadMileageAccount(
+      db,
+      parsed.accountId,
+      'Transfer rates are only supported on airline mileage accounts',
+    );
 
-  await db.query('UPDATE mileage_details SET transfer_rates = $1::jsonb WHERE account_id = $2', [
-    JSON.stringify(transferRates),
-    parsed.data.accountId,
-  ]);
+    await db.query('UPDATE mileage_details SET transfer_rates = $1::jsonb WHERE account_id = $2', [
+      JSON.stringify(transferRates),
+      parsed.accountId,
+    ]);
 
-  return { success: true, data: { accountId: parsed.data.accountId, rates: transferRates } };
+    return { accountId: parsed.accountId, rates: transferRates };
+  });
 }
 
 /** Record miles credited outside the app (e.g. a hotel/dining partner bonus). */
@@ -200,40 +179,27 @@ export async function createMileageManualIn(
   input: CreateMileageManualInInput,
 ): Promise<{ transaction: Transaction }> {
   const { db } = await getSessionContext();
-  const parsed = parseInput(CreateMileageManualInSchema, input);
-  if (!parsed.success) throw new Error(parsed.error);
+  const parsed = parseOrThrow(CreateMileageManualInSchema, input);
 
   return db.transaction(async (tx) => {
-    const mileageAccount = await loadMileageAccount(
+    await loadMileageAccount(
       tx,
-      parsed.data.accountId,
+      parsed.accountId,
       'Manual mileage transfers are only supported on airline mileage accounts',
     );
-    if (!mileageAccount.success) throw new Error(mileageAccount.error);
 
     const metadata: MileageManualInMetadata = {
-      source_description: parsed.data.sourceDescription.trim(),
+      source_description: parsed.sourceDescription.trim(),
     };
 
-    const transaction = await one<Transaction>(
-      tx,
-      `INSERT INTO transactions (type, amount, metadata, to_account, transaction_date)
-       VALUES ($1, $2, $3::jsonb, $4, $5)
-       RETURNING *`,
-      [
-        TransactionType.MILEAGE_MANUAL_IN,
-        parsed.data.miles,
-        JSON.stringify(metadata),
-        parsed.data.accountId,
-        parsed.data.date,
-      ],
-      'Failed to create mileage transaction',
-    );
-
-    await tx.query('UPDATE accounts SET balance = balance + $1 WHERE id = $2', [
-      parsed.data.miles,
-      parsed.data.accountId,
-    ]);
+    const transaction = await insertTransaction(tx, {
+      type: TransactionType.MILEAGE_MANUAL_IN,
+      amount: parsed.miles,
+      metadata,
+      to_account: parsed.accountId,
+      transaction_date: parsed.date,
+    });
+    await adjustBalance(tx, parsed.accountId, parsed.miles);
 
     return { transaction };
   });
@@ -244,140 +210,114 @@ export async function createMileageManualIn(
  * airline account. All must share a reward currency (the mileage account's
  * transfer rate is per-currency, not per-source-account).
  */
-export async function transferRewardsToMileageAccount(
+export function transferRewardsToMileageAccount(
   input: TransferRewardsToMileageAccountInput,
 ): Promise<ActionResult<{ transaction: Transaction; transferredMiles: number }>> {
-  const { db } = await getSessionContext();
-  const parsed = parseInput(TransferRewardsToMileageAccountSchema, input);
-  if (!parsed.success) return parsed;
+  return toActionResult(async () => {
+    const { db } = await getSessionContext();
+    const parsed = parseOrThrow(TransferRewardsToMileageAccountSchema, input);
 
-  return db.transaction(async (tx) => {
-    const normalizedMemo = parsed.data.memo?.trim() || null;
-    const mileageAccount = await loadMileageAccount(
-      tx,
-      parsed.data.mileageAccountId,
-      'Target account must be an airline mileage account',
-    );
-    if (!mileageAccount.success) return mileageAccount;
-
-    if (
-      !mileageAccount.data.airline_program ||
-      !AIRLINE_PROGRAM_IDS.includes(mileageAccount.data.airline_program)
-    ) {
-      return { success: false, error: 'Mileage account airline program is invalid' };
-    }
-
-    const sourceIds = parsed.data.sources.map((source) => source.accountId);
-    const sourceRows = await rows<SourceAccountRow>(
-      tx,
-      'SELECT id, name, type, reward_currency, reward_balance FROM accounts_flat WHERE id = ANY($1)',
-      [sourceIds],
-    );
-    if (sourceRows.length !== sourceIds.length) {
-      return { success: false, error: 'One or more source accounts were not found' };
-    }
-
-    const sourceLookup = new Map(sourceRows.map((account) => [account.id, account]));
-    let transferRewardCurrency: RewardCurrencyId | null = null;
-
-    for (const source of parsed.data.sources) {
-      const account = sourceLookup.get(source.accountId)!;
-      if (account.type !== AccountType.LIABILITY) {
-        return { success: false, error: 'Source accounts must be liability accounts' };
-      }
-      if (!isRewardCurrencyId(account.reward_currency ?? '')) {
-        return { success: false, error: 'All source accounts must have a fixed reward currency' };
-      }
-      if (transferRewardCurrency === null) {
-        transferRewardCurrency = account.reward_currency;
-      } else if (transferRewardCurrency !== account.reward_currency) {
-        return { success: false, error: 'All source accounts must use the same reward currency' };
-      }
-      if (Number(account.reward_balance ?? 0) < source.points) {
-        return { success: false, error: 'Insufficient reward balance' };
-      }
-    }
-    if (!transferRewardCurrency) {
-      return { success: false, error: 'Unable to determine reward currency from source accounts' };
-    }
-
-    const rate = getMileageTransferRate(
-      normalizeMileageTransferRates(mileageAccount.data.transfer_rates),
-      transferRewardCurrency,
-    );
-    const totalSourcePoints = parsed.data.sources.reduce((sum, source) => sum + source.points, 0);
-    const transferredMiles = totalSourcePoints * rate;
-
-    if (transferredMiles <= 0) {
-      return {
-        success: false,
-        error: `This airline account does not have a ${transferRewardCurrency} transfer rate configured`,
-      };
-    }
-
-    const metadata: MileageTransferInMetadata = {
-      reward_currency: transferRewardCurrency,
-      airline_program: mileageAccount.data.airline_program,
-      total_source_points: totalSourcePoints,
-      transferred_miles: transferredMiles,
-      ratio_snapshot: { reward_currency: transferRewardCurrency, miles_per_point: rate },
-      sources: parsed.data.sources.map((source) => {
-        const account = sourceLookup.get(source.accountId)!;
-        return {
-          account_id: account.id,
-          account_name_snapshot: account.name,
-          points_deducted: source.points,
-        };
-      }),
-    };
-
-    const mileageTransaction = await one<Transaction>(
-      tx,
-      `INSERT INTO transactions (type, amount, metadata, to_account, memo, transaction_date)
-       VALUES ($1, $2, $3::jsonb, $4, $5, $6)
-       RETURNING *`,
-      [
-        TransactionType.MILEAGE_TRANSFER_IN,
-        transferredMiles,
-        JSON.stringify(metadata),
-        parsed.data.mileageAccountId,
-        normalizedMemo,
-        parsed.data.date,
-      ],
-      'Failed to create mileage transfer',
-    );
-
-    for (const source of parsed.data.sources) {
-      await one(
+    return db.transaction(async (tx) => {
+      const memo = normalizeMemo(parsed.memo);
+      const mileageAccount = await loadMileageAccount(
         tx,
-        `INSERT INTO transactions
-           (type, amount, reward_currency, reference_transaction_id, from_account, memo, transaction_date)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         RETURNING id`,
-        [
-          TransactionType.REWARD_REDEEM,
-          source.points,
-          transferRewardCurrency,
-          mileageTransaction.id,
-          source.accountId,
-          normalizedMemo ?? `Transfer to ${mileageAccount.data.name}`,
-          parsed.data.date,
-        ],
-        'Failed to record reward redemption',
+        parsed.mileageAccountId,
+        'Target account must be an airline mileage account',
       );
 
-      await tx.query(
-        'UPDATE liability_details SET reward_balance = reward_balance - $1 WHERE account_id = $2',
-        [source.points, source.accountId],
+      if (
+        !mileageAccount.airline_program ||
+        !AIRLINE_PROGRAM_IDS.includes(mileageAccount.airline_program)
+      ) {
+        throw new Error('Mileage account airline program is invalid');
+      }
+
+      const sourceIds = parsed.sources.map((source) => source.accountId);
+      const sourceRows = await rows<SourceAccountRow>(
+        tx,
+        'SELECT id, name, type, reward_currency FROM accounts_flat WHERE id = ANY($1)',
+        [sourceIds],
       );
-    }
+      if (sourceRows.length !== sourceIds.length) {
+        throw new Error('One or more source accounts were not found');
+      }
 
-    await tx.query('UPDATE accounts SET balance = balance + $1 WHERE id = $2', [
-      transferredMiles,
-      parsed.data.mileageAccountId,
-    ]);
+      const sourceLookup = new Map(sourceRows.map((account) => [account.id, account]));
+      let transferRewardCurrency: RewardCurrencyId | null = null;
 
-    return { success: true, data: { transaction: mileageTransaction, transferredMiles } };
+      for (const source of parsed.sources) {
+        const account = sourceLookup.get(source.accountId)!;
+        if (account.type !== AccountType.LIABILITY) {
+          throw new Error('Source accounts must be liability accounts');
+        }
+        if (!isRewardCurrencyId(account.reward_currency ?? '')) {
+          throw new Error('All source accounts must have a fixed reward currency');
+        }
+        if (transferRewardCurrency === null) {
+          transferRewardCurrency = account.reward_currency;
+        } else if (transferRewardCurrency !== account.reward_currency) {
+          throw new Error('All source accounts must use the same reward currency');
+        }
+      }
+      if (!transferRewardCurrency) {
+        throw new Error('Unable to determine reward currency from source accounts');
+      }
+
+      const rate = getMileageTransferRate(
+        normalizeMileageTransferRates(mileageAccount.transfer_rates),
+        transferRewardCurrency,
+      );
+      const totalSourcePoints = parsed.sources.reduce((sum, source) => sum + source.points, 0);
+      const transferredMiles = totalSourcePoints * rate;
+
+      if (transferredMiles <= 0) {
+        throw new Error(
+          `This airline account does not have a ${transferRewardCurrency} transfer rate configured`,
+        );
+      }
+
+      const metadata: MileageTransferInMetadata = {
+        reward_currency: transferRewardCurrency,
+        airline_program: mileageAccount.airline_program,
+        total_source_points: totalSourcePoints,
+        transferred_miles: transferredMiles,
+        ratio_snapshot: { reward_currency: transferRewardCurrency, miles_per_point: rate },
+        sources: parsed.sources.map((source) => {
+          const account = sourceLookup.get(source.accountId)!;
+          return {
+            account_id: account.id,
+            account_name_snapshot: account.name,
+            points_deducted: source.points,
+          };
+        }),
+      };
+
+      const mileageTransaction = await insertTransaction(tx, {
+        type: TransactionType.MILEAGE_TRANSFER_IN,
+        amount: transferredMiles,
+        metadata,
+        to_account: parsed.mileageAccountId,
+        memo,
+        transaction_date: parsed.date,
+      });
+
+      for (const source of parsed.sources) {
+        await insertTransaction(tx, {
+          type: TransactionType.REWARD_REDEEM,
+          amount: source.points,
+          reward_currency: transferRewardCurrency,
+          reference_transaction_id: mileageTransaction.id,
+          from_account: source.accountId,
+          memo: memo ?? `Transfer to ${mileageAccount.name}`,
+          transaction_date: parsed.date,
+        });
+        await adjustRewardBalance(tx, source.accountId, -source.points);
+      }
+
+      await adjustBalance(tx, parsed.mileageAccountId, transferredMiles);
+
+      return { transaction: mileageTransaction, transferredMiles };
+    });
   });
 }
 
@@ -387,93 +327,61 @@ export async function transferRewardsToMileageAccount(
  * liability account, so both the mileage debit and the tax charge commit
  * together or not at all.
  */
-export async function redeemMileageFlight(
+export function redeemMileageFlight(
   input: RedeemMileageFlightInput,
 ): Promise<ActionResult<{ mileageTransaction: Transaction; expenseId: string }>> {
-  const { db } = await getSessionContext();
-  const parsed = parseInput(RedeemMileageFlightSchema, input);
-  if (!parsed.success) return parsed;
+  return toActionResult(async () => {
+    const { db } = await getSessionContext();
+    const parsed = parseOrThrow(RedeemMileageFlightSchema, input);
 
-  return db.transaction(async (tx) => {
-    const mileageAccount = await loadMileageAccount(
-      tx,
-      parsed.data.mileageAccountId,
-      'Selected account is not an airline mileage account',
-    );
-    if (!mileageAccount.success) return mileageAccount;
+    return db.transaction(async (tx) => {
+      await loadMileageAccount(
+        tx,
+        parsed.mileageAccountId,
+        'Selected account is not an airline mileage account',
+      );
 
-    if (new Decimal(mileageAccount.data.balance).lt(parsed.data.miles)) {
-      return { success: false, error: 'Insufficient mileage balance' };
-    }
-
-    let taxAccount: TaxAccountRow;
-    try {
-      taxAccount = await one<TaxAccountRow>(
+      const taxAccount = await one<TaxAccountRow>(
         tx,
         'SELECT id, name, type, currency FROM accounts WHERE id = $1',
-        [parsed.data.taxAccountId],
+        [parsed.taxAccountId],
         'Tax payment account not found',
       );
-    } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : String(error) };
-    }
-    if (taxAccount.type !== AccountType.LIABILITY) {
-      return { success: false, error: 'Tax payment account must be a liability account' };
-    }
-    if (taxAccount.currency !== parsed.data.taxCurrency) {
-      return { success: false, error: 'Tax currency must match the selected payment account' };
-    }
+      if (taxAccount.type !== AccountType.LIABILITY) {
+        throw new Error('Tax payment account must be a liability account');
+      }
+      if (taxAccount.currency !== parsed.taxCurrency) {
+        throw new Error('Tax currency must match the selected payment account');
+      }
 
-    const taxAmount = normalizeMoneyAmount(parsed.data.taxAmount);
-    let expenseResult: Awaited<ReturnType<typeof createTransactionWithinTransaction>>;
-    try {
-      expenseResult = await createTransactionWithinTransaction(tx, {
-        accountId: parsed.data.taxAccountId,
+      const taxAmount = normalizeMoneyAmount(parsed.taxAmount);
+      const expense = await createTransactionWithinTransaction(tx, {
+        accountId: parsed.taxAccountId,
         category: 'Travel',
         amount: taxAmount,
-        memo: parsed.data.ticketName,
-        date: parsed.data.date,
+        memo: parsed.ticketName,
+        date: parsed.date,
       });
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Failed to create expense transaction',
+
+      const metadata: MileageRedeemFlightMetadata = {
+        ticket_name: parsed.ticketName,
+        tax_amount: taxAmount,
+        tax_currency: parsed.taxCurrency,
+        tax_account_id: taxAccount.id,
+        tax_account_name_snapshot: taxAccount.name,
       };
-    }
 
-    const metadata: MileageRedeemFlightMetadata = {
-      ticket_name: parsed.data.ticketName,
-      tax_amount: taxAmount,
-      tax_currency: parsed.data.taxCurrency,
-      tax_account_id: taxAccount.id,
-      tax_account_name_snapshot: taxAccount.name,
-    };
+      const mileageTransaction = await insertTransaction(tx, {
+        type: TransactionType.MILEAGE_REDEEM_FLIGHT,
+        amount: parsed.miles,
+        metadata,
+        from_account: parsed.mileageAccountId,
+        reference_transaction_id: expense.expense_id,
+        transaction_date: parsed.date,
+      });
+      await adjustBalance(tx, parsed.mileageAccountId, -parsed.miles);
 
-    const mileageTransaction = await one<Transaction>(
-      tx,
-      `INSERT INTO transactions
-         (type, amount, metadata, from_account, reference_transaction_id, transaction_date)
-       VALUES ($1, $2, $3::jsonb, $4, $5, $6)
-       RETURNING *`,
-      [
-        TransactionType.MILEAGE_REDEEM_FLIGHT,
-        parsed.data.miles,
-        JSON.stringify(metadata),
-        parsed.data.mileageAccountId,
-        expenseResult.expense_id,
-        parsed.data.date,
-      ],
-      'Failed to record mileage redemption',
-    );
-
-    await tx.query('UPDATE accounts SET balance = balance - $1 WHERE id = $2', [
-      parsed.data.miles,
-      parsed.data.mileageAccountId,
-    ]);
-
-    return {
-      success: true,
-      data: { mileageTransaction, expenseId: expenseResult.expense_id },
-    };
+      return { mileageTransaction, expenseId: expense.expense_id };
+    });
   });
 }

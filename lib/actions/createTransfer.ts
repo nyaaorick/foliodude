@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import Decimal from 'decimal.js';
 import { getSessionContext } from '@/lib/db/session';
-import { one, rows } from '@/lib/db/sql';
-import { normalizeMemo, setBalance } from '@/lib/db/ledger';
+import { rows } from '@/lib/db/sql';
+import { adjustBalance, insertTransaction, normalizeMemo } from '@/lib/db/ledger';
 import { AccountType } from '@/lib/types/accounts';
 import { TransactionType, type Transaction } from '@/lib/types/transactions';
 import { normalizeMoneyAmount } from '@/lib/utils/financial-analytics';
@@ -30,7 +30,6 @@ interface TransferAccount {
   id: string;
   type: AccountType;
   currency: string;
-  balance: number;
 }
 
 /** Move money between two of the user's own accounts, in one currency or two. */
@@ -50,7 +49,7 @@ export async function createTransfer(
   return db.transaction(async (tx) => {
     const accounts = await rows<TransferAccount>(
       tx,
-      'SELECT id, type, currency, balance FROM accounts WHERE id = ANY($1)',
+      'SELECT id, type, currency FROM accounts WHERE id = ANY($1)',
       [[fromAccountId, toAccountId]],
     );
     const fromAccount = accounts.find((account) => account.id === fromAccountId);
@@ -70,9 +69,6 @@ export async function createTransfer(
     if (isCrossCurrency && !rawTargetAmount) {
       throw new Error('Target amount is required for cross-currency transfers');
     }
-    if (new Decimal(fromAccount.balance).lt(amountValue)) {
-      throw new Error('Insufficient balance');
-    }
 
     const targetAmountValue = isCrossCurrency
       ? new Decimal(normalizeMoneyAmount(rawTargetAmount ?? 0))
@@ -88,27 +84,19 @@ export async function createTransfer(
 
     // No user-supplied date field here (unlike createTransaction et al.) — a
     // transfer is always dated today, on the device's calendar.
-    const transaction = await one<Transaction>(
-      tx,
-      `INSERT INTO transactions
-         (type, amount, currency, metadata, from_account, to_account, memo, transaction_date)
-       VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8)
-       RETURNING *`,
-      [
-        TransactionType.TRANSFER,
-        amountValue.toNumber(),
-        fromAccount.currency,
-        JSON.stringify(metadata),
-        fromAccountId,
-        toAccountId,
-        normalizeMemo(memo),
-        localToday(),
-      ],
-      'Failed to create transfer transaction',
-    );
+    const transaction = await insertTransaction(tx, {
+      type: TransactionType.TRANSFER,
+      amount: amountValue.toNumber(),
+      currency: fromAccount.currency,
+      metadata,
+      from_account: fromAccountId,
+      to_account: toAccountId,
+      memo: normalizeMemo(memo),
+      transaction_date: localToday(),
+    });
 
-    await setBalance(tx, fromAccountId, new Decimal(fromAccount.balance).minus(amountValue).toNumber());
-    await setBalance(tx, toAccountId, new Decimal(toAccount.balance).plus(targetAmountValue).toNumber());
+    await adjustBalance(tx, fromAccountId, amountValue.neg());
+    await adjustBalance(tx, toAccountId, targetAmountValue);
 
     return { transaction };
   });
