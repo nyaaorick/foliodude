@@ -26,3 +26,9 @@ export function parseOrThrow<T>(schema: z.ZodType<T>, input: unknown): T {
   if (!parsed.success) throw new Error(parsed.error.issues[0]?.message ?? 'Invalid input');
   return parsed.data;
 }
+
+/** The value of a successful result; a failed one becomes a thrown `Error`. */
+export function unwrap<T>(result: ActionResult<T>): T {
+  if (!result.success) throw new Error(result.error);
+  return result.data;
+}

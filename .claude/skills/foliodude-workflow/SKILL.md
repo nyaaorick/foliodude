@@ -98,7 +98,22 @@ Historical baggage is a cost paid every time someone reads the repo.
 - Do not add a JS balance precheck; the schema CHECK is the single rule and
   `adjustBalance` names the failure.
 
-## 7. Show the user the app after every phase
+## 7. Form dialogs
+
+- A dialog that fills in a form and saves it is a `FormDialog`
+  (`components/app/form-dialog.tsx`): it owns open/pending/error state and the
+  `revalidate()` after a write. Supply the fields and an `onSubmit` that calls the
+  action and `throw`s to show a message. Do not hand-roll `setError` /
+  `setSubmitting` / `revalidate()` in a dialog.
+- Fields are `Field`, `ReadOnlyValue`, `OptionSelect`, `MemoField`, `DateField`
+  (`components/app/form-fields.tsx`).
+- Pass a date input's value (`YYYY-MM-DD`) to the action as is. The actions take
+  `z.string().date()`; `new Date(x).toISOString()` is rejected as "Invalid ISO
+  date" — that bug silently broke seven dialogs.
+- Dialogs have no unit tests. Verify a UI change by driving it in a browser, not
+  by `tsc` alone.
+
+## 8. Show the user the app after every phase
 
 A phase is not done at "typecheck passes and tests are green" — those prove the
 code compiles and the logic holds, not that a human looking at the app would see
