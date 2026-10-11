@@ -17,6 +17,11 @@ export function formatCurrencyAmount(
   }).format(amount);
 }
 
+/** A share count: whole numbers stay whole, up to 6 decimal places otherwise. */
+export function formatShares(value: number) {
+  return new Intl.NumberFormat('en-US', { maximumFractionDigits: 6 }).format(value);
+}
+
 export function formatAccountBalance(
   amount: number,
   currency: string,

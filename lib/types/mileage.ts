@@ -36,7 +36,7 @@ export const AIRLINE_PROGRAM_IDS = AIRLINE_PROGRAMS.map(
 
 export type MileageTransferRateMap = Record<string, number>;
 
-export interface MileageTransferSourceMetadata {
+interface MileageTransferSourceMetadata {
   account_id: string;
   account_name_snapshot: string;
   points_deducted: number;

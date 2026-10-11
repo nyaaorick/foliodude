@@ -8,7 +8,7 @@ import {
 } from '@/lib/types/rewards';
 import { normalizeMoneyAmount } from '@/lib/utils/financial-analytics';
 
-export const RewardRuleSchema = z.object({
+const RewardRuleSchema = z.object({
   category: z.string().trim().min(1),
   multiplier: z.number().nonnegative(),
   rule_source: z.enum(REWARD_RULE_SOURCES),
@@ -17,7 +17,7 @@ export const RewardRuleSchema = z.object({
   fallback_rate: z.number().nonnegative().optional(),
 }).passthrough();
 
-export const RewardRuleSetSchema = z.object({
+const RewardRuleSetSchema = z.object({
   id: z.string().trim().min(1),
   name: z.string().trim().min(1),
   description: z.string().trim().min(1).optional(),

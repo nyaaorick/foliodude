@@ -99,6 +99,10 @@ CREATE TABLE accounts (
   CONSTRAINT accounts_name_check     CHECK (btrim(name) <> ''),
   CONSTRAINT accounts_currency_check CHECK (currency ~ '^[A-Z]{3}$'),
   CONSTRAINT accounts_apy_check      CHECK (apy IS NULL OR (type = 'ASSET' AND apy >= 0)),
+  -- Cash cannot be overdrawn. Every debit path (expense, transfer, trade,
+  -- adjustment, delete-reversal) relies on this one rule; lib/db/ledger.ts
+  -- turns its violation into "Insufficient balance".
+  CONSTRAINT accounts_asset_balance_check CHECK (type <> 'ASSET' OR balance >= 0),
   -- Miles are whole units stored in the money column; they cannot go negative.
   CONSTRAINT accounts_miles_check    CHECK (
     type <> 'AIRLINE_MILES'
@@ -125,11 +129,13 @@ CREATE TABLE liability_details (
   credit_limit    DECIMAL(12,2) CHECK (credit_limit IS NULL OR credit_limit >= 0),
   -- Not ISO 4217: reward currency codes ('MR', 'UR', …) may be 2 characters.
   reward_currency TEXT         CHECK (reward_currency ~ '^[A-Z]{2,4}$'),
-  reward_balance  INTEGER      NOT NULL DEFAULT 0 CHECK (reward_balance >= 0),
+  reward_balance  INTEGER      NOT NULL DEFAULT 0,
   reward_rules    JSONB        NOT NULL DEFAULT '[]'::jsonb,
   spend_stats     JSONB        NOT NULL DEFAULT '{}'::jsonb,
 
   FOREIGN KEY (account_id, type) REFERENCES accounts (id, type) ON DELETE CASCADE,
+
+  CONSTRAINT liability_reward_balance_check CHECK (reward_balance >= 0),
 
   -- Points mean nothing without a currency to denominate them in. Rules may be
   -- set ahead of one, so they are not tied to it.
@@ -459,14 +465,28 @@ CREATE TABLE net_worth_snapshots (
 
 
 -- ── 12. device_secrets ──────────────────────────────────────────────────────
--- Bring-your-own-key API credentials, empty by default. Nothing ships with a
+-- Bring-your-own-key API credentials (and the one endpoint config that goes
+-- with them), empty by default. Nothing ships with a
 -- key; a row is something this user typed on this device.
 --
 -- SYNC  This table is device-local by construction: lib/db/backup.ts lists the
 -- tables it exports and this is not one of them, so a key can never reach Drive.
 
 CREATE TABLE device_secrets (
-  provider   TEXT        PRIMARY KEY CHECK (provider IN ('exchangerate', 'finnhub', 'gemini')),
+  provider   TEXT        PRIMARY KEY CHECK (provider IN ('exchangerate', 'finnhub', 'llm')),
   api_key    TEXT        NOT NULL CHECK (btrim(api_key) <> ''),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  -- The 'llm' provider is any OpenAI-compatible chat-completions endpoint, so it
+  -- needs an address and a model as well as a key. NULL for every other provider.
+  base_url   TEXT,
+  model      TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  CONSTRAINT device_secrets_endpoint_check CHECK (
+    CASE
+      WHEN provider = 'llm' THEN
+             COALESCE(base_url ~ '^https?://', false)
+         AND COALESCE(btrim(model) <> '', false)
+      ELSE base_url IS NULL AND model IS NULL
+    END
+  )
 );

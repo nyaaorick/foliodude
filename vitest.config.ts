@@ -9,9 +9,9 @@ export default defineConfig({
   },
   test: {
     globals: true,
-    // Most test files spin up their own in-memory PGlite (WASM Postgres).
-    // Running files in parallel starts many WASM instances at once and causes
-    // sporadic timeouts under load; sequential files keep the suite reliable.
-    fileParallelism: false,
+    // Booting a WASM Postgres is slow, and slower still with files running in
+    // parallel; the first test (or hook) in a file pays for it.
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
   },
 });

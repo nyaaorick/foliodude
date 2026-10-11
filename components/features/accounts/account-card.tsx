@@ -11,6 +11,7 @@ import type { RewardRateMap } from '@/lib/types/rewards';
 import {
   formatAccountBalance,
   formatCurrencyAmount,
+  formatShares,
   getLiabilityBalanceToneClass,
 } from '@/lib/utils/account-balance-display';
 import { getAirlineProgramLabel } from '@/lib/utils/display-labels';
@@ -20,13 +21,6 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogT
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Progress, ProgressLabel } from '@/components/ui/progress';
-
-function formatShares(value: number) {
-  return new Intl.NumberFormat('en-US', {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 6,
-  }).format(value);
-}
 
 const DEFAULT_ASSET_APY = 3.6;
 

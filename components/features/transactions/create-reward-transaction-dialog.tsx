@@ -1,31 +1,20 @@
 'use client';
 
 import { useState } from 'react';
-import { revalidate } from '@/lib/data/store';
+import { Plus } from 'lucide-react';
+import { FormDialog, formNumber, formText } from '@/components/app/form-dialog';
+import { DateField, Field, MemoField, OptionSelect } from '@/components/app/form-fields';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { createRewardTransaction } from '@/lib/actions/reward-actions';
 import { TransactionType } from '@/lib/types/transactions';
 import { getTransactionTypeLabel } from '@/lib/utils/display-labels';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from '@/components/ui/dialog';
-import { Plus } from 'lucide-react';
-import { localToday } from '@/lib/utils/local-date';
+
+type Direction = TransactionType.REWARD_TRANSFER_IN | TransactionType.REWARD_REDEEM;
+
+const DIRECTION_OPTIONS = [TransactionType.REWARD_TRANSFER_IN, TransactionType.REWARD_REDEEM].map(
+  (type) => ({ value: type, label: getTransactionTypeLabel(type) }),
+);
 
 interface CreateRewardTransactionDialogProps {
   accountId: string;
@@ -36,154 +25,55 @@ export function CreateRewardTransactionDialog({
   accountId,
   triggerLabel,
 }: CreateRewardTransactionDialogProps) {
-  const [open, setOpen] = useState(false);
-  const [direction, setDirection] = useState<
-    TransactionType.REWARD_TRANSFER_IN | TransactionType.REWARD_REDEEM
-  >(
-    TransactionType.REWARD_TRANSFER_IN,
-  );
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState('');
-
-  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    setError('');
-    setSubmitting(true);
-
-    const form = new FormData(e.currentTarget);
-    const amountStr = form.get('amount') as string;
-    const memo = form.get('memo') as string;
-    const date = form.get('date') as string;
-    const amount = Math.round(parseFloat(amountStr || '0'));
-
-    if (amount <= 0) {
-      setError('Points must be greater than 0');
-      setSubmitting(false);
-      return;
-    }
-
-    try {
-      await createRewardTransaction({
-        accountId,
-        type: direction,
-        amount,
-        memo: memo || undefined,
-        date: new Date(date).toISOString(),
-      });
-
-      setOpen(false);
-      revalidate();
-    } catch (error) {
-      if (!(error instanceof Error)) {
-        throw error;
-      }
-
-      setError(error.message);
-    } finally {
-      setSubmitting(false);
-    }
-  };
+  const [direction, setDirection] = useState<Direction>(TransactionType.REWARD_TRANSFER_IN);
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(nextOpen) => {
-        setOpen(nextOpen);
-        if (!nextOpen) {
-          setError('');
-        }
+    <FormDialog
+      trigger={
+        <Button size="sm" variant="outline">
+          <Plus className="size-4" />
+          {triggerLabel}
+        </Button>
+      }
+      title="Adjust Points"
+      description="Manually add or deduct points from this card's fixed reward balance."
+      submitLabel="Save"
+      onSubmit={async (form) => {
+        await createRewardTransaction({
+          accountId,
+          type: direction,
+          amount: Math.round(formNumber(form, 'amount')),
+          memo: formText(form, 'memo'),
+          date: String(form.get('date')),
+        });
       }}
     >
-      <DialogTrigger
-        render={
-          <Button size="sm" variant="outline">
-            <Plus className="size-4" />
-            {triggerLabel}
-          </Button>
+      <Field label="Direction">
+        <OptionSelect
+          value={direction}
+          onChange={(value) => setDirection(value as Direction)}
+          options={DIRECTION_OPTIONS}
+        />
+      </Field>
+      <Field label="Points" htmlFor="amount">
+        <Input
+          id="amount"
+          name="amount"
+          type="number"
+          min="1"
+          step="1"
+          required
+          placeholder="10000"
+        />
+      </Field>
+      <MemoField
+        placeholder={
+          direction === TransactionType.REWARD_TRANSFER_IN
+            ? 'e.g. Welcome bonus'
+            : 'e.g. Manual correction'
         }
       />
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Adjust Points</DialogTitle>
-          <DialogDescription>
-            Manually add or deduct points from this card&apos;s fixed reward balance.
-          </DialogDescription>
-        </DialogHeader>
-
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="space-y-2">
-            <Label>Direction</Label>
-            <Select
-              value={direction}
-              onValueChange={(value) =>
-                value &&
-                setDirection(
-                  value as
-                    | TransactionType.REWARD_TRANSFER_IN
-                    | TransactionType.REWARD_REDEEM,
-                )
-              }
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue>{getTransactionTypeLabel(direction)}</SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={TransactionType.REWARD_TRANSFER_IN}>
-                  {getTransactionTypeLabel(TransactionType.REWARD_TRANSFER_IN)}
-                </SelectItem>
-                <SelectItem value={TransactionType.REWARD_REDEEM}>
-                  {getTransactionTypeLabel(TransactionType.REWARD_REDEEM)}
-                </SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="amount">Points</Label>
-            <Input
-              id="amount"
-              name="amount"
-              type="number"
-              min="1"
-              step="1"
-              required
-              placeholder="10000"
-            />
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="memo">Memo (optional)</Label>
-            <Input
-              id="memo"
-              name="memo"
-              placeholder={
-                direction === TransactionType.REWARD_TRANSFER_IN
-                  ? 'e.g. Welcome bonus'
-                  : 'e.g. Manual correction'
-              }
-            />
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="date">Date</Label>
-            <Input
-              id="date"
-              name="date"
-              type="date"
-              required
-              defaultValue={localToday()}
-            />
-          </div>
-
-          {error && <p className="text-sm text-red-500">{error}</p>}
-
-          <DialogFooter>
-            <Button type="submit" disabled={submitting}>
-              {submitting ? 'Saving...' : 'Save'}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+      <DateField />
+    </FormDialog>
   );
 }

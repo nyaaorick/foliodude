@@ -16,8 +16,7 @@ import {
 } from '@/lib/utils/financial-analytics';
 import { fetchUsdExchangeRates } from '@/lib/utils/fx-rates';
 import { localToday } from '@/lib/utils/local-date';
-
-type ActionResult<T> = { success: true; data: T } | { success: false; error: string };
+import { toActionResult, type ActionResult } from './result';
 
 async function ensureTodaySnapshot(
   db: Awaited<ReturnType<typeof getSessionContext>>['db'],
@@ -51,8 +50,8 @@ async function ensureTodaySnapshot(
   );
 }
 
-export async function getDashboardAnalytics(): Promise<ActionResult<DashboardAnalytics>> {
-  try {
+export function getDashboardAnalytics(): Promise<ActionResult<DashboardAnalytics>> {
+  return toActionResult(async () => {
     const { db } = await getSessionContext();
 
     const [accountRows, rewardRateRows] = await Promise.all([
@@ -92,39 +91,34 @@ export async function getDashboardAnalytics(): Promise<ActionResult<DashboardAna
     const expenseSeries = buildMonthlyExpenseSeries(expenseRows, fxRates);
 
     return {
-      success: true,
-      data: {
-        allocation: buildAllocationSlices(currentBreakdown.breakdown),
-        debtSummary: accounts.some((a) => a.type === AccountType.LIABILITY)
-          ? {
-              label: 'Credit Card Debt',
-              usd: currentBreakdown.liabilitiesUsd,
-              grossDebtUsd: currentBreakdown.breakdown.credit_card_debt,
-              overpaymentUsd: currentBreakdown.breakdown.credit_card_overpayment,
-              accounts: accounts
-                .filter((a) => a.type === AccountType.LIABILITY)
-                .map((a) => ({
-                  account_id: a.id,
-                  name: a.name,
-                  usd: getAccountUsdValue(a, rewardRates, fxRates),
-                })),
-            }
-          : null,
-        totals: {
-          assetsUsd: currentBreakdown.assetsUsd,
-          liabilitiesUsd: currentBreakdown.liabilitiesUsd,
-          netWorthUsd: currentBreakdown.netWorthUsd,
-        },
-        netWorthHistory: snapshotRows.map((row) => ({
-          date: row.snapshot_date,
-          netWorthUsd: row.net_worth_usd,
-        })),
-        monthlyExpenses: expenseSeries.monthlyExpenses,
-        expenseCategories: expenseSeries.expenseCategories,
-        asOf: new Date().toISOString(),
+      allocation: buildAllocationSlices(currentBreakdown.breakdown),
+      debtSummary: accounts.some((a) => a.type === AccountType.LIABILITY)
+        ? {
+            label: 'Credit Card Debt',
+            usd: currentBreakdown.liabilitiesUsd,
+            grossDebtUsd: currentBreakdown.breakdown.credit_card_debt,
+            overpaymentUsd: currentBreakdown.breakdown.credit_card_overpayment,
+            accounts: accounts
+              .filter((a) => a.type === AccountType.LIABILITY)
+              .map((a) => ({
+                account_id: a.id,
+                name: a.name,
+                usd: getAccountUsdValue(a, rewardRates, fxRates),
+              })),
+          }
+        : null,
+      totals: {
+        assetsUsd: currentBreakdown.assetsUsd,
+        liabilitiesUsd: currentBreakdown.liabilitiesUsd,
+        netWorthUsd: currentBreakdown.netWorthUsd,
       },
+      netWorthHistory: snapshotRows.map((row) => ({
+        date: row.snapshot_date,
+        netWorthUsd: row.net_worth_usd,
+      })),
+      monthlyExpenses: expenseSeries.monthlyExpenses,
+      expenseCategories: expenseSeries.expenseCategories,
+      asOf: new Date().toISOString(),
     };
-  } catch (error) {
-    return { success: false, error: error instanceof Error ? error.message : 'Failed to load dashboard analytics' };
-  }
+  });
 }

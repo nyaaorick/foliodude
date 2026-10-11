@@ -29,8 +29,8 @@ function read(name: string): string | null {
   return value ? value : null;
 }
 
-export const GOOGLE_CLIENT_ID_EXTENSION = read('VITE_GOOGLE_CLIENT_ID_EXTENSION');
-export const GOOGLE_CLIENT_ID_WEB = read('VITE_GOOGLE_CLIENT_ID_WEB');
+const GOOGLE_CLIENT_ID_EXTENSION = read('VITE_GOOGLE_CLIENT_ID_EXTENSION');
+const GOOGLE_CLIENT_ID_WEB = read('VITE_GOOGLE_CLIENT_ID_WEB');
 
 /**
  * `drive.appdata` only. Google classifies it non-sensitive, so the project

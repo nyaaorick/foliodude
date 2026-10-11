@@ -1,8 +1,9 @@
 import { z } from 'zod';
 import Decimal from 'decimal.js';
 import { getSessionContext } from '@/lib/db/session';
-import type { Queryable } from '@/lib/db/session';
+import { adjustBalance, adjustRewardBalance, insertTransaction, normalizeMemo } from '@/lib/db/ledger';
 import { one } from '@/lib/db/sql';
+import type { Tx } from '@/lib/db/tx';
 import {
   buildStatsKey,
   calculateReward,
@@ -35,10 +36,8 @@ interface CreateExpenseResult {
 }
 
 interface AccountRow {
-  balance: number;
   currency: string;
   reward_currency: string | null;
-  reward_balance: number;
   reward_rules: RewardRule[] | null;
   spend_stats: SpendStats | null;
 }
@@ -51,7 +50,7 @@ interface AccountRow {
  * one with.
  */
 export async function createTransactionWithinTransaction(
-  db: Queryable,
+  tx: Tx,
   input: CreateExpenseInput,
 ): Promise<CreateExpenseResult> {
   const parsed = CreateExpenseSchema.safeParse(input);
@@ -68,8 +67,8 @@ export async function createTransactionWithinTransaction(
   const amount = normalizeMoneyAmount(rawAmount);
 
   const account = await one<AccountRow>(
-    db,
-    `SELECT balance, currency, reward_currency, reward_balance, reward_rules, spend_stats
+    tx,
+    `SELECT currency, reward_currency, reward_rules, spend_stats
        FROM accounts_flat
       WHERE id = $1`,
     [accountId],
@@ -86,72 +85,43 @@ export async function createTransactionWithinTransaction(
     ? calculateReward(rules, currentStats, category, amount)
     : { points: 0, capped: false };
 
-  let updatedStats = currentStats;
-  let updatedRewardBalance = account.reward_balance ?? 0;
+  const memoValue = normalizeMemo(memo);
 
-  if (rewardCurrency && rewardResult.points > 0) {
-    updatedRewardBalance = new Decimal(account.reward_balance ?? 0)
-      .plus(rewardResult.points)
-      .toNumber();
-    const matchedRule = findMatchedRule(rules, category);
-    const statsKey = buildStatsKey(category, date, matchedRule?.cap_period);
-    updatedStats = { ...currentStats };
-    updatedStats[statsKey] = normalizeMoneyAmount((updatedStats[statsKey] ?? 0) + amount);
-  }
-
-  const nextBalance = new Decimal(account.balance).minus(amount).toNumber();
-  const normalizedMemo = memo?.trim() ? memo.trim() : null;
-
-  const expense = await one<{ id: string }>(
-    db,
-    `INSERT INTO transactions
-       (type, amount, currency, reward_currency, metadata,
-        reference_transaction_id, from_account, to_account, category, memo, transaction_date)
-     VALUES ($1, $2, $3, NULL, '{}'::jsonb, NULL, $4, NULL, $5, $6, $7)
-     RETURNING id`,
-    [
-      TransactionType.EXPENSE,
-      amount,
-      account.currency,
-      accountId,
-      category,
-      normalizedMemo,
-      date,
-    ],
-    'Failed to create expense transaction',
-  );
-
-  await db.query('UPDATE accounts SET balance = $1 WHERE id = $2', [nextBalance, accountId]);
+  const expense = await insertTransaction(tx, {
+    type: TransactionType.EXPENSE,
+    amount,
+    currency: account.currency,
+    from_account: accountId,
+    category,
+    memo: memoValue,
+    transaction_date: date,
+  });
+  await adjustBalance(tx, accountId, -amount);
 
   let rewardId: string | null = null;
 
   if (rewardCurrency && rewardResult.points > 0) {
-    const reward = await one<{ id: string }>(
-      db,
-      `INSERT INTO transactions
-         (type, amount, currency, reward_currency, metadata,
-          reference_transaction_id, from_account, to_account, category, memo, transaction_date)
-       VALUES ($1, $2, NULL, $3, '{}'::jsonb, $4, NULL, $5, $6, $7, $8)
-       RETURNING id`,
-      [
-        TransactionType.REWARD_EARN,
-        rewardResult.points,
-        rewardCurrency,
-        expense.id,
-        accountId,
-        category,
-        normalizedMemo,
-        date,
-      ],
-      'Failed to create reward transaction',
-    );
-
+    const reward = await insertTransaction(tx, {
+      type: TransactionType.REWARD_EARN,
+      amount: rewardResult.points,
+      reward_currency: rewardCurrency,
+      reference_transaction_id: expense.id,
+      to_account: accountId,
+      category,
+      memo: memoValue,
+      transaction_date: date,
+    });
     rewardId = reward.id;
 
-    await db.query(
-      `UPDATE liability_details SET reward_balance = $1, spend_stats = $2 WHERE account_id = $3`,
-      [updatedRewardBalance, JSON.stringify(updatedStats), accountId],
-    );
+    await adjustRewardBalance(tx, accountId, rewardResult.points);
+
+    const statsKey = buildStatsKey(category, date, findMatchedRule(rules, category)?.cap_period);
+    const updatedStats: SpendStats = { ...currentStats };
+    updatedStats[statsKey] = normalizeMoneyAmount((updatedStats[statsKey] ?? 0) + amount);
+    await tx.query('UPDATE liability_details SET spend_stats = $1::jsonb WHERE account_id = $2', [
+      JSON.stringify(updatedStats),
+      accountId,
+    ]);
   }
 
   return {
@@ -166,10 +136,9 @@ export async function createTransactionWithinTransaction(
  * Log an expense, and the reward it earns, as one atomic write.
  *
  * The expense, the balance decrement, the reward transaction and the reward
- * balance/stats update all commit together. Under the previous Supabase client
- * these were four separate round-trips, so a failure between them could leave
- * an expense with no matching reward, or a reward whose points were never
- * credited.
+ * balance/stats update commit together or not at all, so a failure between
+ * them cannot leave an expense with no matching reward, or points that were
+ * never credited.
  */
 export async function createTransaction(
   input: CreateExpenseInput,

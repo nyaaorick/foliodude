@@ -3,6 +3,7 @@ import { useEffect, useState, useTransition } from 'react';
 import { createByIntentFromText } from '@/lib/actions/createByIntent';
 import { revalidate } from '@/lib/data/store';
 import { Page, PageHeader } from '@/components/app/page-state';
+import { ApiKeysSection } from '@/components/features/lab/api-keys-section';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 
@@ -60,11 +61,13 @@ export default function LabPage() {
         description="Features under test. Feedback is always welcome."
       />
 
+      <ApiKeysSection />
+
       <section className="space-y-3 rounded-2xl border border-border/70 bg-card/80 p-4 md:p-6">
         <div>
           <h2 className="text-base font-medium tracking-tight">Create by intent</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            Submitting creates real data. Needs a Gemini key in settings; use test accounts
+            Submitting creates real data. Needs the LLM configured above; use test accounts
             and avoid sensitive info.
           </p>
         </div>

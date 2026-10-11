@@ -1,7 +1,6 @@
 import { z } from 'zod';
-import Decimal from 'decimal.js';
 import { getSessionContext } from '@/lib/db/session';
-import { insertTransaction, loadAccount, normalizeMemo, setBalance } from '@/lib/db/ledger';
+import { adjustBalance, insertTransaction, loadAccount, normalizeMemo } from '@/lib/db/ledger';
 
 import { AccountType } from '@/lib/types/accounts';
 import { TransactionType } from '@/lib/types/transactions';
@@ -23,7 +22,6 @@ interface CreateAssetsExpenseResult {
 }
 
 interface AssetAccountRow {
-  balance: number;
   currency: string;
   type: AccountType;
 }
@@ -46,14 +44,14 @@ export async function createAssetsExpense(
     const account = await loadAccount<AssetAccountRow>(
       tx,
       accountId,
-      'balance, currency, type',
+      'currency, type',
     );
 
     if (account.type !== AccountType.ASSET) {
       throw new Error('Account must be an asset account');
     }
 
-    const expenseId = await insertTransaction(tx, {
+    const expense = await insertTransaction(tx, {
       type: TransactionType.EXPENSE,
       amount,
       currency: account.currency,
@@ -63,8 +61,8 @@ export async function createAssetsExpense(
       transaction_date: date,
     });
 
-    await setBalance(tx, accountId, new Decimal(account.balance).minus(amount).toNumber());
+    await adjustBalance(tx, accountId, -amount);
 
-    return { expense_id: expenseId, reward_id: null, reward_points: 0 };
+    return { expense_id: expense.id, reward_id: null, reward_points: 0 };
   });
 }

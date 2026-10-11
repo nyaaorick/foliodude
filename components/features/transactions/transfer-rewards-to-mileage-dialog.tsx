@@ -2,33 +2,14 @@
 
 import { useMemo, useState } from 'react';
 import { ArrowRightLeft, Plus, Trash2 } from 'lucide-react';
-import { revalidate } from '@/lib/data/store';
-import { transferRewardsToMileageAccount } from '@/lib/actions/mileage-actions';
-import { AccountType, type AccountOption } from '@/lib/types/accounts';
-import {
-  getAirlineProgramLabel,
-  getRewardCurrencyLabel,
-} from '@/lib/utils/display-labels';
+import { FormDialog } from '@/components/app/form-dialog';
+import { DateField, Field, MemoField, OptionSelect, ReadOnlyValue } from '@/components/app/form-fields';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from '@/components/ui/dialog';
-import { localToday } from '@/lib/utils/local-date';
+import { transferRewardsToMileageAccount } from '@/lib/actions/mileage-actions';
+import { unwrap } from '@/lib/actions/result';
+import { AccountType, type AccountOption } from '@/lib/types/accounts';
+import { getAirlineProgramLabel, getRewardCurrencyLabel } from '@/lib/utils/display-labels';
 
 interface TransferRewardsToMileageDialogProps {
   liabilityAccounts: AccountOption[];
@@ -64,9 +45,7 @@ function formatMileageAccountOption(account: AccountOption) {
   return getAirlineProgramLabel(account.airline_program, 'full');
 }
 
-function buildInitialSources(
-  fixedSourceAccountId?: string,
-): SourceDraft[] {
+function buildInitialSources(fixedSourceAccountId?: string): SourceDraft[] {
   return [{ accountId: fixedSourceAccountId ?? '', points: '' }];
 }
 
@@ -76,13 +55,8 @@ export function TransferRewardsToMileageDialog({
   fixedMileageAccountId,
   fixedSourceAccountId,
 }: TransferRewardsToMileageDialogProps) {
-  const [open, setOpen] = useState(false);
   const [mileageAccountId, setMileageAccountId] = useState(fixedMileageAccountId ?? '');
-  const [sources, setSources] = useState<SourceDraft[]>(
-    buildInitialSources(fixedSourceAccountId),
-  );
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState('');
+  const [sources, setSources] = useState<SourceDraft[]>(buildInitialSources(fixedSourceAccountId));
 
   const eligibleLiabilityAccounts = useMemo(
     () =>
@@ -95,13 +69,10 @@ export function TransferRewardsToMileageDialog({
     [liabilityAccounts],
   );
 
-  const primarySourceAccount = useMemo(() => {
-    const primaryId = fixedSourceAccountId ?? sources[0]?.accountId ?? '';
-    return eligibleLiabilityAccounts.find((account) => account.id === primaryId) ?? null;
-  }, [eligibleLiabilityAccounts, fixedSourceAccountId, sources]);
-
+  const primaryId = fixedSourceAccountId ?? sources[0]?.accountId ?? '';
+  const primarySourceAccount =
+    eligibleLiabilityAccounts.find((account) => account.id === primaryId) ?? null;
   const activeRewardCurrency = primarySourceAccount?.reward_currency ?? null;
-
   const selectedSourceIds = new Set(sources.map((source) => source.accountId).filter(Boolean));
 
   const getSourceOptions = (index: number) => {
@@ -109,21 +80,13 @@ export function TransferRewardsToMileageDialog({
       return primarySourceAccount ? [primarySourceAccount] : [];
     }
 
-    if (index === 0 && !activeRewardCurrency) {
-      return eligibleLiabilityAccounts;
-    }
+    if (index === 0 && !activeRewardCurrency) return eligibleLiabilityAccounts;
 
-    return eligibleLiabilityAccounts.filter((account) => {
-      if (account.reward_currency !== activeRewardCurrency) {
-        return false;
-      }
-
-      if (sources[index]?.accountId === account.id) {
-        return true;
-      }
-
-      return !selectedSourceIds.has(account.id);
-    });
+    return eligibleLiabilityAccounts.filter(
+      (account) =>
+        account.reward_currency === activeRewardCurrency &&
+        (sources[index]?.accountId === account.id || !selectedSourceIds.has(account.id)),
+    );
   };
 
   const canAddSource =
@@ -131,8 +94,7 @@ export function TransferRewardsToMileageDialog({
     activeRewardCurrency !== null &&
     eligibleLiabilityAccounts.some(
       (account) =>
-        account.reward_currency === activeRewardCurrency &&
-        !selectedSourceIds.has(account.id),
+        account.reward_currency === activeRewardCurrency && !selectedSourceIds.has(account.id),
     );
   const hasMileageAccounts = mileageAccounts.length > 0;
 
@@ -140,270 +102,169 @@ export function TransferRewardsToMileageDialog({
     setSources((prev) => prev.map((source, i) => (i === index ? nextSource : source)));
   };
 
-  const resetState = () => {
-    setMileageAccountId(fixedMileageAccountId ?? '');
-    setSources(buildInitialSources(fixedSourceAccountId));
-    setSubmitting(false);
-    setError('');
-  };
-
-  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    setError('');
-
-    const form = new FormData(event.currentTarget);
-    const date = form.get('date') as string;
-    const memo = form.get('memo') as string;
-    const targetMileageAccountId = fixedMileageAccountId ?? mileageAccountId;
-    const normalizedSources = sources.map((source) => ({
-      accountId: source.accountId,
-      points: Number.parseInt(source.points || '0', 10),
-    }));
-
-    if (!targetMileageAccountId) {
-      setError('Select an airline mileage account');
-      return;
-    }
-
-    if (normalizedSources.some((source) => !source.accountId || source.points <= 0)) {
-      setError('Each source must include a card and positive points');
-      return;
-    }
-
-    setSubmitting(true);
-    const result = await transferRewardsToMileageAccount({
-      mileageAccountId: targetMileageAccountId,
-      sources: normalizedSources,
-      memo: memo || undefined,
-      date: new Date(date).toISOString(),
-    });
-    setSubmitting(false);
-
-    if (!result.success) {
-      setError(result.error);
-      return;
-    }
-
-    setOpen(false);
-    resetState();
-    revalidate();
-  };
-
-  const title = fixedMileageAccountId
-    ? 'Transfer Points to This Mileage Account'
-    : 'Redeem Points to Airline Miles';
+  const fixedMileageAccount = fixedMileageAccountId
+    ? mileageAccounts.find((account) => account.id === fixedMileageAccountId)
+    : undefined;
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(nextOpen) => {
-        setOpen(nextOpen);
-        if (!nextOpen) {
-          resetState();
+    <FormDialog
+      trigger={
+        <Button
+          size="sm"
+          variant={fixedSourceAccountId ? 'outline' : 'default'}
+          disabled={!hasMileageAccounts}
+        >
+          <ArrowRightLeft className="size-4" />
+          Redeem
+        </Button>
+      }
+      title={
+        fixedMileageAccountId
+          ? 'Transfer Points to This Mileage Account'
+          : 'Redeem Points to Airline Miles'
+      }
+      description="Use up to 3 cards with the same fixed reward currency and transfer into an existing airline mileage account."
+      contentClassName="sm:max-w-lg"
+      submitLabel="Redeem"
+      submitDisabled={!hasMileageAccounts || eligibleLiabilityAccounts.length === 0}
+      onOpenChange={(open) => {
+        if (open) return;
+        setMileageAccountId(fixedMileageAccountId ?? '');
+        setSources(buildInitialSources(fixedSourceAccountId));
+      }}
+      onSubmit={async (form) => {
+        const targetMileageAccountId = fixedMileageAccountId ?? mileageAccountId;
+        if (!targetMileageAccountId) throw new Error('Select an airline mileage account');
+
+        const normalizedSources = sources.map((source) => ({
+          accountId: source.accountId,
+          points: Number.parseInt(source.points || '0', 10),
+        }));
+        if (normalizedSources.some((source) => !source.accountId || source.points <= 0)) {
+          throw new Error('Each source must include a card and positive points');
         }
+
+        unwrap(
+          await transferRewardsToMileageAccount({
+            mileageAccountId: targetMileageAccountId,
+            sources: normalizedSources,
+            memo: String(form.get('memo') ?? '') || undefined,
+            date: String(form.get('date')),
+          }),
+        );
       }}
     >
-      <DialogTrigger
-        render={
-          <Button
-            size="sm"
-            variant={fixedSourceAccountId ? 'outline' : 'default'}
-            disabled={!hasMileageAccounts}
-          >
-            <ArrowRightLeft className="size-4" />
-            Redeem
-          </Button>
-        }
-      />
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>
-            Use up to 3 cards with the same fixed reward currency and transfer into an existing airline mileage account.
-          </DialogDescription>
-        </DialogHeader>
+      {fixedMileageAccount ? (
+        <ReadOnlyValue label="Target Mileage Account">
+          {formatMileageAccountOption(fixedMileageAccount)}
+        </ReadOnlyValue>
+      ) : (
+        <Field label="Target Mileage Account">
+          <OptionSelect
+            value={mileageAccountId}
+            onChange={setMileageAccountId}
+            options={mileageAccounts.map((account) => ({
+              value: account.id,
+              label: formatMileageAccountOption(account),
+            }))}
+            placeholder="Select airline mileage account"
+          />
+        </Field>
+      )}
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {fixedMileageAccountId ? (
-            <div className="space-y-2">
-              <Label>Target Mileage Account</Label>
-              <div className="rounded-lg border border-input bg-muted/40 px-3 py-2 text-sm">
-                {formatMileageAccountOption(
-                  mileageAccounts.find((account) => account.id === fixedMileageAccountId)!,
-                )}
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              <Label>Target Mileage Account</Label>
-              <Select
-                value={mileageAccountId}
-                onValueChange={(value) => value && setMileageAccountId(value)}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Select airline mileage account">
-                    {mileageAccountId
-                      ? formatMileageAccountOption(
-                          mileageAccounts.find((account) => account.id === mileageAccountId)!,
-                        )
-                      : null}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  {mileageAccounts.map((account) => (
-                    <SelectItem key={account.id} value={account.id}>
-                      {formatMileageAccountOption(account)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          )}
+      <ReadOnlyValue label="Reward Currency">
+        {activeRewardCurrency
+          ? getRewardCurrencyLabel(activeRewardCurrency, 'full')
+          : 'Select the first card to lock the reward currency'}
+      </ReadOnlyValue>
 
-          <div className="space-y-2">
-            <Label>Reward Currency</Label>
-            <div className="rounded-lg border border-input bg-muted/40 px-3 py-2 text-sm">
-              {activeRewardCurrency
-                ? getRewardCurrencyLabel(activeRewardCurrency, 'full')
-                : 'Select the first card to lock the reward currency'}
-            </div>
-          </div>
+      <div className="space-y-3">
+        {sources.map((source, index) => {
+          const currentAccount = source.accountId
+            ? (liabilityAccounts.find((account) => account.id === source.accountId) ?? null)
+            : null;
+          const sourcePoints = Number.parseInt(source.points || '0', 10);
+          const remainingPoints =
+            currentAccount && Number.isFinite(sourcePoints)
+              ? currentAccount.reward_balance - Math.max(sourcePoints, 0)
+              : null;
 
-          <div className="space-y-3">
-            {sources.map((source, index) => {
-              const sourceOptions = getSourceOptions(index);
-              const currentAccount = source.accountId
-                ? liabilityAccounts.find((account) => account.id === source.accountId) ?? null
-                : null;
-              const sourcePoints = Number.parseInt(source.points || '0', 10);
-              const remainingPoints =
-                currentAccount && Number.isFinite(sourcePoints)
-                  ? currentAccount.reward_balance - Math.max(sourcePoints, 0)
-                  : null;
-
-              return (
-                <div key={index} className="space-y-1.5">
-                  <div className="grid grid-cols-[1fr_120px_auto] gap-2">
-                    {fixedSourceAccountId && index === 0 ? (
-                      <div className="rounded-lg border border-input bg-muted/40 px-3 py-2 text-sm">
-                        {currentAccount ? renderAccountOption(currentAccount) : 'Missing card'}
-                      </div>
-                    ) : (
-                      <Select
-                        value={source.accountId}
-                        onValueChange={(value) => {
-                          if (!value) return;
-                          updateSource(index, { ...source, accountId: value });
-                        }}
-                      >
-                        <SelectTrigger className="w-full">
-                          <SelectValue placeholder="Select card">
-                            {currentAccount ? renderAccountOption(currentAccount) : null}
-                          </SelectValue>
-                        </SelectTrigger>
-                        <SelectContent>
-                          {sourceOptions.map((account) => (
-                            <SelectItem key={account.id} value={account.id}>
-                              {renderAccountOption(account)}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    )}
-
-                    <Input
-                      type="number"
-                      min="1"
-                      step="1"
-                      placeholder="Points"
-                      value={source.points}
-                      onChange={(event) =>
-                        updateSource(index, { ...source, points: event.target.value })
-                      }
-                    />
-
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon-sm"
-                      disabled={sources.length === 1}
-                      onClick={() =>
-                        setSources((prev) =>
-                          prev.filter((_, currentIndex) => currentIndex !== index),
-                        )
-                      }
-                    >
-                      <Trash2 className="size-4" />
-                    </Button>
+          return (
+            <div key={index} className="space-y-1.5">
+              <div className="grid grid-cols-[1fr_120px_auto] gap-2">
+                {fixedSourceAccountId && index === 0 ? (
+                  <div className="rounded-lg border border-input bg-muted/40 px-3 py-2 text-sm">
+                    {currentAccount ? renderAccountOption(currentAccount) : 'Missing card'}
                   </div>
+                ) : (
+                  <OptionSelect
+                    value={source.accountId}
+                    onChange={(accountId) => updateSource(index, { ...source, accountId })}
+                    options={getSourceOptions(index).map((account) => ({
+                      value: account.id,
+                      label: renderAccountOption(account),
+                    }))}
+                    placeholder="Select card"
+                  />
+                )}
 
-                  {currentAccount?.reward_currency && (
-                    <p className="text-xs text-muted-foreground">
-                      Available {currentAccount.reward_balance.toLocaleString()}{' '}
-                      {getRewardCurrencyLabel(currentAccount.reward_currency)}
-                      {remainingPoints !== null &&
-                        source.points &&
-                        ` · Remaining ${Math.max(remainingPoints, 0).toLocaleString()} ${getRewardCurrencyLabel(currentAccount.reward_currency)}`}
-                    </p>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+                <Input
+                  type="number"
+                  min="1"
+                  step="1"
+                  placeholder="Points"
+                  value={source.points}
+                  onChange={(event) => updateSource(index, { ...source, points: event.target.value })}
+                />
 
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={!canAddSource}
-            onClick={() =>
-              setSources((prev) => [...prev, { accountId: '', points: '' }])
-            }
-          >
-            <Plus className="size-4" />
-            Add Source
-          </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  disabled={sources.length === 1}
+                  onClick={() => setSources((prev) => prev.filter((_, i) => i !== index))}
+                >
+                  <Trash2 className="size-4" />
+                </Button>
+              </div>
 
-          <div className="space-y-2">
-            <Label htmlFor="memo">Memo (optional)</Label>
-            <Input id="memo" name="memo" placeholder="e.g. Family trip transfer" />
-          </div>
+              {currentAccount?.reward_currency && (
+                <p className="text-xs text-muted-foreground">
+                  Available {currentAccount.reward_balance.toLocaleString()}{' '}
+                  {getRewardCurrencyLabel(currentAccount.reward_currency)}
+                  {remainingPoints !== null &&
+                    source.points &&
+                    ` · Remaining ${Math.max(remainingPoints, 0).toLocaleString()} ${getRewardCurrencyLabel(currentAccount.reward_currency)}`}
+                </p>
+              )}
+            </div>
+          );
+        })}
+      </div>
 
-          <div className="space-y-2">
-            <Label htmlFor="date">Date</Label>
-            <Input
-              id="date"
-              name="date"
-              type="date"
-              required
-              defaultValue={localToday()}
-            />
-          </div>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        disabled={!canAddSource}
+        onClick={() => setSources((prev) => [...prev, { accountId: '', points: '' }])}
+      >
+        <Plus className="size-4" />
+        Add Source
+      </Button>
 
-          {!hasMileageAccounts && (
-            <p className="text-sm text-muted-foreground">
-              Create an airline mileage account first.
-            </p>
-          )}
+      <MemoField placeholder="e.g. Family trip transfer" />
+      <DateField />
 
-          {hasMileageAccounts && eligibleLiabilityAccounts.length === 0 && (
-            <p className="text-sm text-muted-foreground">
-              No liability accounts currently have a fixed reward currency with a positive point balance.
-            </p>
-          )}
+      {!hasMileageAccounts && (
+        <p className="text-sm text-muted-foreground">Create an airline mileage account first.</p>
+      )}
 
-          {error && <p className="text-sm text-red-500">{error}</p>}
-
-          <DialogFooter>
-            <Button
-              type="submit"
-              disabled={submitting || !hasMileageAccounts || eligibleLiabilityAccounts.length === 0}
-            >
-              {submitting ? 'Saving...' : 'Redeem'}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+      {hasMileageAccounts && eligibleLiabilityAccounts.length === 0 && (
+        <p className="text-sm text-muted-foreground">
+          No liability accounts currently have a fixed reward currency with a positive point balance.
+        </p>
+      )}
+    </FormDialog>
   );
 }

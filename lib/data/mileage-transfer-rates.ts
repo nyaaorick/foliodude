@@ -1,7 +1,7 @@
 import { REWARD_CURRENCIES, isRewardCurrencyId, type RewardCurrencyId } from '@/lib/types/rewards';
 import type { MileageTransferRateMap } from '@/lib/types/mileage';
 
-export const DEFAULT_MILEAGE_TRANSFER_RATES: MileageTransferRateMap = {
+const DEFAULT_MILEAGE_TRANSFER_RATES: MileageTransferRateMap = {
   MR: 20,
   UR: 20,
   RC: 15,

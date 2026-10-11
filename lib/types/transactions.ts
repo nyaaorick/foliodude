@@ -26,11 +26,11 @@ export interface CrossCurrencyTransferMetadata {
   implied_exchange_rate: number;
 }
 
-export interface AssetBalanceAdjustmentMetadata {
+interface AssetBalanceAdjustmentMetadata {
   kind: 'asset_balance_adjustment';
 }
 
-export type TransactionMetadata =
+type TransactionMetadata =
   | Json
   | AssetBalanceAdjustmentMetadata
   | CrossCurrencyTransferMetadata
@@ -72,15 +72,3 @@ export interface TransactionWithReward extends Transaction {
   reference_transaction?: LinkedTransactionSummary | null;
 }
 
-export type CreateTransactionInput = Pick<
-  Transaction,
-  'type' | 'amount' | 'transaction_date'
-> & {
-  currency?: string | null;
-  reward_currency?: string | null;
-  reference_transaction_id?: string;
-  from_account?: string;
-  to_account?: string;
-  category?: string;
-  memo?: string;
-};

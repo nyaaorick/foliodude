@@ -1,13 +1,94 @@
+import Decimal from 'decimal.js';
+
+import type { Transaction } from '@/lib/types/transactions';
+
 import type { Queryable } from './session';
-import { one } from './sql';
+import { isCheckViolation, one } from './sql';
+import type { Tx } from './tx';
 
 /**
- * Shared write helpers for the ledger.
- *
- * These exist because a dozen actions repeat the same three statements, not to
- * abstract SQL away: each one is a single statement you can read in full here,
- * and anything non-trivial stays written out at the call site.
+ * Shared write helpers for the ledger. Every write takes a `Tx` — a handle only
+ * `db.transaction()` produces — so a ledger write cannot compile outside one.
  */
+
+/** A debit pushed a balance below what its CHECK constraint allows. */
+export class InsufficientBalanceError extends Error {}
+
+/** CHECK constraint -> the message a debit that trips it should carry. */
+const BALANCE_FLOORS: Record<string, string> = {
+  accounts_asset_balance_check: 'Insufficient balance',
+  accounts_miles_check: 'Insufficient mileage balance',
+  accounts_share_check: 'Insufficient balance',
+  liability_reward_balance_check: 'Insufficient reward balance',
+};
+
+async function applyDelta(
+  tx: Tx,
+  text: string,
+  accountId: string,
+  signedDelta: Decimal.Value,
+  notFound: string,
+): Promise<void> {
+  const delta = new Decimal(signedDelta);
+  try {
+    const result = await tx.query(text, [delta.toNumber(), accountId]);
+    if (result.affectedRows === 0) throw new Error(notFound);
+  } catch (error) {
+    const constraint = (error as { constraint?: string }).constraint;
+    if (isCheckViolation(error) && delta.isNegative() && constraint && constraint in BALANCE_FLOORS) {
+      throw new InsufficientBalanceError(BALANCE_FLOORS[constraint]);
+    }
+    throw error;
+  }
+}
+
+/**
+ * Add `signedDelta` to an account's stored balance — positive raises the
+ * column, negative lowers it. The sign is the change to the column itself, not
+ * debit/credit: an expense on a credit card passes a negative delta because the
+ * card's balance moves further below zero.
+ *
+ * Relative in SQL, so it never overwrites a value read earlier. Throws
+ * `InsufficientBalanceError` when a debit breaks a balance floor.
+ */
+export function adjustBalance(tx: Tx, accountId: string, signedDelta: Decimal.Value): Promise<void> {
+  return applyDelta(
+    tx,
+    'UPDATE accounts SET balance = balance + $1 WHERE id = $2',
+    accountId,
+    signedDelta,
+    'Account not found',
+  );
+}
+
+/** Same as `adjustBalance`, for a liability account's reward points. */
+export function adjustRewardBalance(
+  tx: Tx,
+  accountId: string,
+  signedDelta: Decimal.Value,
+): Promise<void> {
+  return applyDelta(
+    tx,
+    'UPDATE liability_details SET reward_balance = reward_balance + $1 WHERE account_id = $2',
+    accountId,
+    signedDelta,
+    'Reward account not found',
+  );
+}
+
+/** Set a share position outright (from a computed trade or a stored snapshot). */
+export async function setSharePosition(
+  tx: Tx,
+  accountId: string,
+  shares: Decimal.Value,
+  costBasis: Decimal.Value,
+): Promise<void> {
+  const result = await tx.query(
+    'UPDATE share_details SET shares = $1, cost_basis = $2 WHERE account_id = $3',
+    [new Decimal(shares).toNumber(), new Decimal(costBasis).toNumber(), accountId],
+  );
+  if (result.affectedRows === 0) throw new Error('Share account not found');
+}
 
 export interface TransactionInsert {
   type: string;
@@ -27,24 +108,21 @@ export interface TransactionInsert {
 }
 
 /**
- * Insert one ledger row and return its id.
+ * Insert one ledger row and return it.
  *
  * Every column is listed explicitly so the discriminant CHECK constraints in
  * 001_init see exactly what the caller intended — an omitted field becomes NULL
  * rather than silently picking up a default.
  */
-export async function insertTransaction(
-  db: Queryable,
-  row: TransactionInsert,
-): Promise<string> {
-  const inserted = await one<{ id: string }>(
-    db,
+export function insertTransaction(tx: Tx, row: TransactionInsert): Promise<Transaction> {
+  return one<Transaction>(
+    tx,
     `INSERT INTO transactions
        (type, amount, currency, reward_currency, metadata,
         reference_transaction_id, from_account, to_account, category, memo,
         share_ticker, share_quantity, share_price, transaction_date)
      VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-     RETURNING id`,
+     RETURNING *`,
     [
       row.type,
       row.amount,
@@ -63,8 +141,6 @@ export async function insertTransaction(
     ],
     'Failed to create transaction',
   );
-
-  return inserted.id;
 }
 
 /** Load one account, flattened with its details. */
@@ -80,11 +156,6 @@ export function loadAccount<T>(
     [accountId],
     notFoundMessage,
   );
-}
-
-/** Set an account's balance. */
-export async function setBalance(db: Queryable, accountId: string, balance: number): Promise<void> {
-  await db.query('UPDATE accounts SET balance = $1 WHERE id = $2', [balance, accountId]);
 }
 
 /** Trim to null — the ledger stores an absent memo as NULL, never ''. */

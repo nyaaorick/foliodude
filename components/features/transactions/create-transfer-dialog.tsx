@@ -1,30 +1,15 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { ArrowRightLeft } from 'lucide-react';
-import { revalidate } from '@/lib/data/store';
-import { createTransfer } from '@/lib/actions/createTransfer';
-import { buyShare, sellShare } from '@/lib/actions/share-actions';
-import { AccountType, type AccountOption } from '@/lib/types/accounts';
+import { FormDialog, formNumber, formText } from '@/components/app/form-dialog';
+import { Field, MemoField, OptionSelect, ReadOnlyValue } from '@/components/app/form-fields';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from '@/components/ui/dialog';
+import { createTransfer } from '@/lib/actions/createTransfer';
+import { unwrap } from '@/lib/actions/result';
+import { buyShare, sellShare } from '@/lib/actions/share-actions';
+import { AccountType, type AccountOption } from '@/lib/types/accounts';
 
 interface CreateTransferDialogProps {
   mode: 'transfer' | 'repay' | 'buy-share' | 'sell-share';
@@ -68,6 +53,10 @@ function getDialogCopy(mode: CreateTransferDialogProps['mode']) {
   }
 }
 
+function toOptions(accounts: AccountOption[]) {
+  return accounts.map((account) => ({ value: account.id, label: formatAccountOption(account) }));
+}
+
 export function CreateTransferDialog({
   mode,
   accounts,
@@ -76,39 +65,21 @@ export function CreateTransferDialog({
   shareAccountId,
   triggerLabel,
 }: CreateTransferDialogProps) {
-  const [open, setOpen] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState('');
-  const [amount, setAmount] = useState('');
-  const [targetAmount, setTargetAmount] = useState('');
-  const [targetAmountTouched, setTargetAmountTouched] = useState(false);
-  const [targetAmountLoading, setTargetAmountLoading] = useState(false);
+  const byId = (id?: string) => (id ? (accounts.find((account) => account.id === id) ?? null) : null);
 
-  const fixedFromAccount = fromAccountId
-    ? accounts.find((account) => account.id === fromAccountId) ?? null
-    : null;
-  const fixedToAccount = toAccountId
-    ? accounts.find((account) => account.id === toAccountId) ?? null
-    : null;
-  const shareAccount = shareAccountId
-    ? accounts.find((account) => account.id === shareAccountId) ?? null
-    : null;
-  const linkedBrokerageAccount =
-    shareAccount?.brokerage_account_id
-      ? accounts.find((account) => account.id === shareAccount.brokerage_account_id) ??
-        null
-      : null;
+  const fixedFromAccount = byId(fromAccountId);
+  const fixedToAccount = byId(toAccountId);
+  const shareAccount = byId(shareAccountId);
+  const linkedBrokerageAccount = byId(shareAccount?.brokerage_account_id ?? undefined);
 
   const sourceOptions = fixedToAccount
     ? accounts.filter((account) => account.type === AccountType.ASSET)
     : [];
-
   const targetOptions = fixedFromAccount
     ? accounts.filter(
         (account) =>
           account.id !== fixedFromAccount.id &&
-          (account.type === AccountType.ASSET ||
-            account.type === AccountType.LIABILITY),
+          (account.type === AccountType.ASSET || account.type === AccountType.LIABILITY),
       )
     : [];
 
@@ -119,12 +90,10 @@ export function CreateTransferDialog({
     toAccountId ?? targetOptions[0]?.id ?? '',
   );
 
-  const selectedFromAccount = fixedFromAccount
-    ? fixedFromAccount
-    : sourceOptions.find((account) => account.id === selectedFromAccountId) ?? null;
-  const selectedToAccount = fixedToAccount
-    ? fixedToAccount
-    : targetOptions.find((account) => account.id === selectedToAccountId) ?? null;
+  const selectedFromAccount =
+    fixedFromAccount ?? sourceOptions.find((account) => account.id === selectedFromAccountId) ?? null;
+  const selectedToAccount =
+    fixedToAccount ?? targetOptions.find((account) => account.id === selectedToAccountId) ?? null;
 
   const isShareMode = mode === 'buy-share' || mode === 'sell-share';
   const isCrossCurrency = Boolean(
@@ -141,395 +110,163 @@ export function CreateTransferDialog({
 
   const copy = getDialogCopy(mode);
 
-  useEffect(() => {
-    if (!open || isShareMode || !isCrossCurrency || !selectedFromAccount || !selectedToAccount) {
-      if (!isCrossCurrency) {
-        setTargetAmount('');
-        setTargetAmountTouched(false);
-        setTargetAmountLoading(false);
-      }
-      return;
+  const submitShareTrade = async (form: FormData) => {
+    if (!shareAccount || !linkedBrokerageAccount) {
+      throw new Error('Linked brokerage cash account is missing');
     }
 
-    if (targetAmountTouched) {
-      return;
-    }
+    const quantity = formNumber(form, 'quantity');
+    const price = formNumber(form, 'sharePrice');
+    if (!Number.isFinite(quantity) || quantity <= 0) throw new Error('Quantity must be greater than 0');
+    if (!Number.isFinite(price) || price <= 0) throw new Error('Price must be greater than 0');
 
-    let cancelled = false;
-    const fromCurrency = selectedFromAccount.currency;
-    const toCurrency = selectedToAccount.currency;
-
-    async function loadTargetAmount() {
-      setTargetAmountLoading(true);
-
-      try {
-        const response = await fetch(
-          `/api/exchange-rate?from=${fromCurrency}&to=${toCurrency}`,
-        );
-
-        if (!response.ok) {
-          return;
-        }
-
-        const payload = (await response.json()) as { rate?: number };
-        if (
-          cancelled ||
-          typeof payload.rate !== 'number' ||
-          !Number.isFinite(payload.rate) ||
-          payload.rate <= 0
-        ) {
-          return;
-        }
-
-        const sourceAmount = Number(amount || '0');
-        setTargetAmount(
-          sourceAmount > 0 ? (sourceAmount * payload.rate).toFixed(2) : '',
-        );
-      } finally {
-        if (!cancelled) {
-          setTargetAmountLoading(false);
-        }
-      }
-    }
-
-    void loadTargetAmount();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    amount,
-    isCrossCurrency,
-    isShareMode,
-    open,
-    selectedFromAccount,
-    selectedToAccount,
-    targetAmountTouched,
-  ]);
-
-  const resetTransferState = () => {
-    setAmount('');
-    setTargetAmount('');
-    setTargetAmountTouched(false);
-    setTargetAmountLoading(false);
-    setError('');
+    const trade = mode === 'buy-share' ? buyShare : sellShare;
+    unwrap(
+      await trade({
+        shareAccountId: shareAccount.id,
+        brokerageAccountId: linkedBrokerageAccount.id,
+        quantity,
+        price,
+        memo: formText(form, 'memo'),
+      }),
+    );
   };
 
-  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    setError('');
+  const submitTransfer = async (form: FormData) => {
+    if (!selectedFromAccount || !selectedToAccount) throw new Error('Select both accounts');
 
-    const form = new FormData(e.currentTarget);
-    const memo = form.get('memo') as string;
+    const amount = formNumber(form, 'amount');
+    if (!Number.isFinite(amount) || amount <= 0) throw new Error('Amount must be greater than 0');
 
-    if (isShareMode) {
-      if (!shareAccount || !linkedBrokerageAccount) {
-        setError('Linked brokerage cash account is missing');
-        return;
-      }
-
-      const quantity = Number(form.get('quantity') || '0');
-      const price = Number(form.get('sharePrice') || '0');
-
-      if (!Number.isFinite(quantity) || quantity <= 0) {
-        setError('Quantity must be greater than 0');
-        return;
-      }
-
-      if (!Number.isFinite(price) || price <= 0) {
-        setError('Price must be greater than 0');
-        return;
-      }
-
-      setSubmitting(true);
-
-      const result =
-        mode === 'buy-share'
-          ? await buyShare({
-              shareAccountId: shareAccount.id,
-              brokerageAccountId: linkedBrokerageAccount.id,
-              quantity,
-              price,
-              memo: memo || undefined,
-            })
-          : await sellShare({
-              shareAccountId: shareAccount.id,
-              brokerageAccountId: linkedBrokerageAccount.id,
-              quantity,
-              price,
-              memo: memo || undefined,
-            });
-
-      setSubmitting(false);
-
-      if (!result.success) {
-        setError(result.error);
-        return;
-      }
-
-      setOpen(false);
-      revalidate();
-      return;
+    const targetAmount = isCrossCurrency ? formNumber(form, 'targetAmount') : undefined;
+    if (isCrossCurrency && !(targetAmount! > 0)) {
+      throw new Error('Target amount must be greater than 0');
     }
 
-    const currentFromAccountId = fixedFromAccount?.id ?? selectedFromAccountId;
-    const currentToAccountId = fixedToAccount?.id ?? selectedToAccountId;
-
-    if (!currentFromAccountId || !currentToAccountId) {
-      setError('Select both accounts');
-      return;
-    }
-
-    const parsedAmount = Number(amount || '0');
-
-    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
-      setError('Amount must be greater than 0');
-      return;
-    }
-
-    const parsedTargetAmount = isCrossCurrency ? Number(targetAmount || '0') : undefined;
-
-    if (
-      isCrossCurrency &&
-      (!parsedTargetAmount ||
-        !Number.isFinite(parsedTargetAmount) ||
-        parsedTargetAmount <= 0)
-    ) {
-      setError('Target amount must be greater than 0');
-      return;
-    }
-
-    setSubmitting(true);
-
-    try {
-      await createTransfer({
-        fromAccountId: currentFromAccountId,
-        toAccountId: currentToAccountId,
-        amount: parsedAmount,
-        targetAmount: parsedTargetAmount,
-        memo: memo || undefined,
-      });
-
-      setOpen(false);
-      resetTransferState();
-      revalidate();
-    } catch (error) {
-      setError(error instanceof Error ? error.message : 'Failed to create transfer');
-    } finally {
-      setSubmitting(false);
-    }
+    await createTransfer({
+      fromAccountId: selectedFromAccount.id,
+      toAccountId: selectedToAccount.id,
+      amount,
+      targetAmount,
+      memo: formText(form, 'memo'),
+    });
   };
-
-  const triggerVariant =
-    mode === 'repay' || mode === 'sell-share' ? 'outline' : 'default';
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(nextOpen) => {
-        setOpen(nextOpen);
-        if (!nextOpen) {
-          resetTransferState();
-        }
-      }}
+    <FormDialog
+      trigger={
+        <Button size="sm" variant={mode === 'repay' || mode === 'sell-share' ? 'outline' : 'default'}>
+          <ArrowRightLeft className="size-4" />
+          {triggerLabel}
+        </Button>
+      }
+      title={copy.title}
+      description={copy.description}
+      submitLabel={copy.submitLabel}
+      submitDisabled={!hasCompatibleAccounts}
+      onSubmit={isShareMode ? submitShareTrade : submitTransfer}
     >
-      <DialogTrigger
-        render={
-          <Button size="sm" variant={triggerVariant}>
-            <ArrowRightLeft className="size-4" />
-            {triggerLabel}
-          </Button>
-        }
-      />
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{copy.title}</DialogTitle>
-          <DialogDescription>{copy.description}</DialogDescription>
-        </DialogHeader>
+      {isShareMode ? (
+        <>
+          <ReadOnlyValue label={mode === 'buy-share' ? 'From Cash Account' : 'To Cash Account'}>
+            {linkedBrokerageAccount
+              ? formatAccountOption(linkedBrokerageAccount)
+              : 'Missing linked brokerage account'}
+          </ReadOnlyValue>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {isShareMode ? (
-            <>
-              <div className="space-y-2">
-                <Label>
-                  {mode === 'buy-share' ? 'From Cash Account' : 'To Cash Account'}
-                </Label>
-                <div className="rounded-lg border border-input bg-muted/40 px-3 py-2 text-sm">
-                  {linkedBrokerageAccount
-                    ? formatAccountOption(linkedBrokerageAccount)
-                    : 'Missing linked brokerage account'}
-                </div>
-              </div>
+          <ReadOnlyValue label={mode === 'buy-share' ? 'To Share Account' : 'From Share Account'}>
+            {shareAccount ? formatAccountOption(shareAccount) : 'Missing share account'}
+          </ReadOnlyValue>
 
-              <div className="space-y-2">
-                <Label>
-                  {mode === 'buy-share' ? 'To Share Account' : 'From Share Account'}
-                </Label>
-                <div className="rounded-lg border border-input bg-muted/40 px-3 py-2 text-sm">
-                  {shareAccount ? formatAccountOption(shareAccount) : 'Missing share account'}
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="quantity">Quantity</Label>
-                <Input
-                  id="quantity"
-                  name="quantity"
-                  type="number"
-                  min="0.000001"
-                  step="0.000001"
-                  required
-                  placeholder="0"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="sharePrice">Price</Label>
-                <Input
-                  id="sharePrice"
-                  name="sharePrice"
-                  type="number"
-                  min="0.0001"
-                  step="0.0001"
-                  required
-                  placeholder="0.0000"
-                />
-              </div>
-            </>
-          ) : (
-            <>
-              {fixedFromAccount ? (
-                <div className="space-y-2">
-                  <Label>From</Label>
-                  <div className="rounded-lg border border-input bg-muted/40 px-3 py-2 text-sm">
-                    {formatAccountOption(fixedFromAccount)}
-                  </div>
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  <Label>From</Label>
-                  <Select
-                    value={selectedFromAccountId}
-                    onValueChange={(value) => value && setSelectedFromAccountId(value)}
-                  >
-                    <SelectTrigger className="w-full">
-                      <SelectValue placeholder="Select source account">
-                        {selectedFromAccount
-                          ? formatAccountOption(selectedFromAccount)
-                          : null}
-                      </SelectValue>
-                    </SelectTrigger>
-                    <SelectContent>
-                      {sourceOptions.map((account) => (
-                        <SelectItem key={account.id} value={account.id}>
-                          {formatAccountOption(account)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
-
-              {fixedToAccount ? (
-                <div className="space-y-2">
-                  <Label>To</Label>
-                  <div className="rounded-lg border border-input bg-muted/40 px-3 py-2 text-sm">
-                    {formatAccountOption(fixedToAccount)}
-                  </div>
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  <Label>To</Label>
-                  <Select
-                    value={selectedToAccountId}
-                    onValueChange={(value) => value && setSelectedToAccountId(value)}
-                  >
-                    <SelectTrigger className="w-full">
-                      <SelectValue placeholder="Select destination account">
-                        {selectedToAccount ? formatAccountOption(selectedToAccount) : null}
-                      </SelectValue>
-                    </SelectTrigger>
-                    <SelectContent>
-                      {targetOptions.map((account) => (
-                        <SelectItem key={account.id} value={account.id}>
-                          {formatAccountOption(account)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
-
-              <div className="space-y-2">
-                <Label htmlFor="amount">Amount</Label>
-                <Input
-                  id="amount"
-                  name="amount"
-                  type="number"
-                  min="0.01"
-                  step="0.01"
-                  required
-                  placeholder="0.00"
-                  value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
-                />
-              </div>
-
-              {isCrossCurrency && (
-                <div className="space-y-2">
-                  <Label htmlFor="targetAmount">
-                    {selectedToAccount?.currency} Amount
-                  </Label>
-                  <Input
-                    id="targetAmount"
-                    name="targetAmount"
-                    type="number"
-                    min="0.01"
-                    step="0.01"
-                    required
-                    placeholder="0.00"
-                    value={targetAmount}
-                    onChange={(e) => {
-                      setTargetAmount(e.target.value);
-                      setTargetAmountTouched(true);
-                    }}
-                  />
-                  {targetAmountLoading && (
-                    <p className="text-xs text-muted-foreground">
-                      Loading current exchange rate...
-                    </p>
-                  )}
-                </div>
-              )}
-            </>
-          )}
-
-          <div className="space-y-2">
-            <Label htmlFor="memo">Memo (optional)</Label>
+          <Field label="Quantity" htmlFor="quantity">
             <Input
-              id="memo"
-              name="memo"
-              placeholder={isShareMode ? 'e.g. Buy after earnings' : 'e.g. Monthly payment'}
+              id="quantity"
+              name="quantity"
+              type="number"
+              min="0.000001"
+              step="0.000001"
+              required
+              placeholder="0"
             />
-          </div>
+          </Field>
 
-          {!hasCompatibleAccounts && (
-            <p className="text-sm text-muted-foreground">
-              {isShareMode
-                ? 'No linked brokerage cash account is available.'
-                : 'No compatible accounts available.'}
-            </p>
+          <Field label="Price" htmlFor="sharePrice">
+            <Input
+              id="sharePrice"
+              name="sharePrice"
+              type="number"
+              min="0.0001"
+              step="0.0001"
+              required
+              placeholder="0.0000"
+            />
+          </Field>
+        </>
+      ) : (
+        <>
+          {fixedFromAccount ? (
+            <ReadOnlyValue label="From">{formatAccountOption(fixedFromAccount)}</ReadOnlyValue>
+          ) : (
+            <Field label="From">
+              <OptionSelect
+                value={selectedFromAccountId}
+                onChange={setSelectedFromAccountId}
+                options={toOptions(sourceOptions)}
+                placeholder="Select source account"
+              />
+            </Field>
           )}
 
-          {error && <p className="text-sm text-red-500">{error}</p>}
+          {fixedToAccount ? (
+            <ReadOnlyValue label="To">{formatAccountOption(fixedToAccount)}</ReadOnlyValue>
+          ) : (
+            <Field label="To">
+              <OptionSelect
+                value={selectedToAccountId}
+                onChange={setSelectedToAccountId}
+                options={toOptions(targetOptions)}
+                placeholder="Select destination account"
+              />
+            </Field>
+          )}
 
-          <DialogFooter>
-            <Button type="submit" disabled={submitting || !hasCompatibleAccounts}>
-              {submitting ? 'Saving...' : copy.submitLabel}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+          <Field label="Amount" htmlFor="amount">
+            <Input
+              id="amount"
+              name="amount"
+              type="number"
+              min="0.01"
+              step="0.01"
+              required
+              placeholder="0.00"
+            />
+          </Field>
+
+          {isCrossCurrency && (
+            <Field label={`${selectedToAccount?.currency} Amount`} htmlFor="targetAmount">
+              <Input
+                id="targetAmount"
+                name="targetAmount"
+                type="number"
+                min="0.01"
+                step="0.01"
+                required
+                placeholder="0.00"
+              />
+            </Field>
+          )}
+        </>
+      )}
+
+      <MemoField placeholder={isShareMode ? 'e.g. Buy after earnings' : 'e.g. Monthly payment'} />
+
+      {!hasCompatibleAccounts && (
+        <p className="text-sm text-muted-foreground">
+          {isShareMode
+            ? 'No linked brokerage cash account is available.'
+            : 'No compatible accounts available.'}
+        </p>
+      )}
+    </FormDialog>
   );
 }

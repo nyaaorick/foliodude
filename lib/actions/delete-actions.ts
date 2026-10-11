@@ -1,14 +1,20 @@
 import Decimal from 'decimal.js';
+import {
+  InsufficientBalanceError,
+  adjustBalance,
+  adjustRewardBalance,
+  setSharePosition,
+} from '@/lib/db/ledger';
 import { getSessionContext } from '@/lib/db/session';
 import type { Queryable } from '@/lib/db/session';
-import { isCheckViolation, maybeOne, rows } from '@/lib/db/sql';
+import { maybeOne, rows } from '@/lib/db/sql';
+import type { Tx } from '@/lib/db/tx';
 import { syncShareBalance } from '@/lib/actions/share-actions';
 import { TransactionType } from '@/lib/types/transactions';
 import type { RewardRule, SpendStats } from '@/lib/types/rewards';
 import { SUPPORTED_DELETE_TRANSACTION_TYPES } from '@/lib/utils/delete-support';
 import { buildStatsKey, findMatchedRule } from '@/lib/utils/rewards-engine';
-
-type ActionResult<T> = { success: true; data: T } | { success: false; error: string };
+import { toActionResult, type ActionResult } from './result';
 
 export type DeleteActionInput = { kind: 'account'; id: string } | { kind: 'transaction'; id: string };
 
@@ -211,19 +217,16 @@ async function loadDeletionScope(
 // reason.
 
 async function addBalance(
-  db: Queryable,
+  tx: Tx,
   accountId: string | null,
   delta: Decimal.Value,
   doomed: Set<string>,
 ): Promise<void> {
   if (!accountId || doomed.has(accountId)) return;
   try {
-    await db.query('UPDATE accounts SET balance = balance + $1 WHERE id = $2', [
-      new Decimal(delta).toNumber(),
-      accountId,
-    ]);
+    await adjustBalance(tx, accountId, delta);
   } catch (error) {
-    if (isCheckViolation(error)) {
+    if (error instanceof InsufficientBalanceError) {
       fail('Cannot delete: the balance it added has already been spent');
     }
     throw error;
@@ -231,19 +234,16 @@ async function addBalance(
 }
 
 async function addRewardBalance(
-  db: Queryable,
+  tx: Tx,
   accountId: string | null,
   delta: Decimal.Value,
   doomed: Set<string>,
 ): Promise<void> {
   if (!accountId || doomed.has(accountId)) return;
   try {
-    await db.query(
-      'UPDATE liability_details SET reward_balance = reward_balance + $1 WHERE account_id = $2',
-      [new Decimal(delta).toNumber(), accountId],
-    );
+    await adjustRewardBalance(tx, accountId, delta);
   } catch (error) {
-    if (isCheckViolation(error)) {
+    if (error instanceof InsufficientBalanceError) {
       fail('Cannot delete: the reward points it added have already been spent');
     }
     throw error;
@@ -257,7 +257,7 @@ async function addRewardBalance(
  * take back.
  */
 async function reverseSpendStats(
-  db: Queryable,
+  tx: Tx,
   earn: RelatedTransactionRecord,
   expense: RelatedTransactionRecord,
   doomed: Set<string>,
@@ -265,7 +265,7 @@ async function reverseSpendStats(
   if (!earn.to_account || doomed.has(earn.to_account)) return;
 
   const card = await maybeOne<{ reward_rules: RewardRule[]; spend_stats: SpendStats }>(
-    db,
+    tx,
     'SELECT reward_rules, spend_stats FROM liability_details WHERE account_id = $1',
     [earn.to_account],
   );
@@ -285,7 +285,7 @@ async function reverseSpendStats(
   if (remaining.lte(0)) delete stats[key];
   else stats[key] = remaining.toNumber();
 
-  await db.query('UPDATE liability_details SET spend_stats = $1::jsonb WHERE account_id = $2', [
+  await tx.query('UPDATE liability_details SET spend_stats = $1::jsonb WHERE account_id = $2', [
     JSON.stringify(stats),
     earn.to_account,
   ]);
@@ -293,23 +293,24 @@ async function reverseSpendStats(
 
 /** Put a share position back to how it was before the trade being deleted. */
 async function restoreSharePosition(
-  db: Queryable,
+  tx: Tx,
   shareAccountId: string,
   trade: RelatedTransactionRecord,
   doomed: Set<string>,
 ): Promise<void> {
   if (doomed.has(shareAccountId)) return;
 
-  await db.query('UPDATE share_details SET shares = $1, cost_basis = $2 WHERE account_id = $3', [
-    trade.metadata.shares_before,
-    trade.metadata.cost_basis_before,
+  await setSharePosition(
+    tx,
     shareAccountId,
-  ]);
-  await syncShareBalance(db, shareAccountId);
+    trade.metadata.shares_before as number,
+    trade.metadata.cost_basis_before as number,
+  );
+  await syncShareBalance(tx, shareAccountId);
 }
 
 async function reverseTransaction(
-  db: Queryable,
+  tx: Tx,
   transaction: RelatedTransactionRecord,
   scope: Map<string, RelatedTransactionRecord>,
   doomed: Set<string>,
@@ -318,35 +319,35 @@ async function reverseTransaction(
 
   switch (transaction.type) {
     case TransactionType.EXPENSE:
-      return addBalance(db, from, amount, doomed);
+      return addBalance(tx, from, amount, doomed);
     case TransactionType.INCOME:
-      return addBalance(db, to, new Decimal(amount).neg(), doomed);
+      return addBalance(tx, to, new Decimal(amount).neg(), doomed);
     case TransactionType.TRANSFER: {
       // A cross-currency transfer credited the target amount, not `amount`.
       const credited =
         typeof transaction.metadata.target_amount === 'number' ? transaction.metadata.target_amount : amount;
-      await addBalance(db, from, amount, doomed);
-      return addBalance(db, to, new Decimal(credited).neg(), doomed);
+      await addBalance(tx, from, amount, doomed);
+      return addBalance(tx, to, new Decimal(credited).neg(), doomed);
     }
     case TransactionType.REWARD_EARN: {
-      await addRewardBalance(db, to, new Decimal(amount).neg(), doomed);
-      return reverseSpendStats(db, transaction, scope.get(transaction.reference_transaction_id!)!, doomed);
+      await addRewardBalance(tx, to, new Decimal(amount).neg(), doomed);
+      return reverseSpendStats(tx, transaction, scope.get(transaction.reference_transaction_id!)!, doomed);
     }
     case TransactionType.REWARD_TRANSFER_IN:
-      return addRewardBalance(db, to, new Decimal(amount).neg(), doomed);
+      return addRewardBalance(tx, to, new Decimal(amount).neg(), doomed);
     case TransactionType.REWARD_REDEEM:
-      return addRewardBalance(db, from, amount, doomed);
+      return addRewardBalance(tx, from, amount, doomed);
     case TransactionType.MILEAGE_TRANSFER_IN:
     case TransactionType.MILEAGE_MANUAL_IN:
-      return addBalance(db, to, new Decimal(amount).neg(), doomed);
+      return addBalance(tx, to, new Decimal(amount).neg(), doomed);
     case TransactionType.MILEAGE_REDEEM_FLIGHT:
-      return addBalance(db, from, amount, doomed);
+      return addBalance(tx, from, amount, doomed);
     case TransactionType.SHARE_BUY:
-      await addBalance(db, from, amount, doomed);
-      return restoreSharePosition(db, to!, transaction, doomed);
+      await addBalance(tx, from, amount, doomed);
+      return restoreSharePosition(tx, to!, transaction, doomed);
     case TransactionType.SHARE_SELL:
-      await addBalance(db, to, new Decimal(amount).neg(), doomed);
-      return restoreSharePosition(db, from!, transaction, doomed);
+      await addBalance(tx, to, new Decimal(amount).neg(), doomed);
+      return restoreSharePosition(tx, from!, transaction, doomed);
     default:
       fail(`Delete action does not support ${transaction.type}`);
   }
@@ -366,11 +367,11 @@ async function reverseTransaction(
  * through it (first: the foreign key from a position to its brokerage has no
  * delete action).
  */
-export async function deleteAction(input: DeleteActionInput): Promise<ActionResult<null>> {
-  const { db } = await getSessionContext();
+export function deleteAction(input: DeleteActionInput): Promise<ActionResult<null>> {
+  return toActionResult(async () => {
+    const { db } = await getSessionContext();
 
-  try {
-    return await db.transaction(async (tx) => {
+    await db.transaction(async (tx) => {
       const doomedAccountIds: string[] = [];
       if (input.kind === 'account') {
         const positions = await rows<{ account_id: string }>(
@@ -403,15 +404,10 @@ export async function deleteAction(input: DeleteActionInput): Promise<ActionResu
           await tx.query('DELETE FROM accounts WHERE id = $1', [accountId]);
         }
       }
-
-      return { success: true as const, data: null };
     });
-  } catch (error) {
-    if (error instanceof Error) {
-      return { success: false, error: error.message };
-    }
-    throw error;
-  }
+
+    return null;
+  });
 }
 
 export async function deleteAccount(id: string) {

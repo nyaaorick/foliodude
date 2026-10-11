@@ -19,7 +19,7 @@ still there offline.
 
 - **Nothing is sent anywhere by default.** The app ships with no API keys of
   any kind; optional integrations (live FX rates, share prices, AI-assisted
-  entry) only activate if you supply your own key in Settings.
+  entry) only activate if you supply your own key on the Lab page.
 - **Two native-feeling surfaces from one codebase**: a Firefox sidebar for
   desktop, a standalone PWA you add to your iPhone home screen for mobile.
 - **Multi-currency, multi-account by design** — assets, liabilities, airline
@@ -58,7 +58,7 @@ Open the sidebar in Firefox with `Ctrl/Cmd+B`, or View → Sidebar → FolioDude
 For iOS, serve `.output/pwa` over HTTPS/LAN and use Share → Add to Home Screen.
 
 Optional API keys (FX rates, share prices, AI-assisted entry) are entered by
-the user in Settings and stored only in the local database — see PLAN.md §1
+the user on the Lab page and stored only in the local database — see PLAN.md §1
 and §7. Nothing needs to be configured to run the app.
 
 ## Layout
@@ -82,7 +82,7 @@ assets/globals.css single Tailwind entry, shared by both targets
 
 Phase 1 (build tooling) and Phase 2 (local database layer) are done: every
 file in `lib/actions/` runs directly against PGlite inside a transaction, with
-181 tests passing against a real in-memory database (not a mocked query
+144 tests passing against a real in-memory database (not a mocked query
 builder). `npm run compile` is clean across the whole project.
 
 Phase 3 (UI) is done: `pages/*.tsx` read real data through `useLiveQuery`, and

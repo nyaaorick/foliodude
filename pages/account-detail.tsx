@@ -14,6 +14,7 @@ import type { TransactionWithReward } from '@/lib/types/transactions';
 import {
   formatAccountBalance,
   formatCurrencyAmount,
+  formatShares,
   getLiabilityBalanceToneClass,
 } from '@/lib/utils/account-balance-display';
 import { getAirlineProgramLabel } from '@/lib/utils/display-labels';
@@ -43,10 +44,6 @@ interface AccountDetail {
   account: AccountWithStats | null;
   support: AccountDetailSupportData;
   transactions: TransactionWithReward[];
-}
-
-function formatShares(amount: number) {
-  return new Intl.NumberFormat('en-US', { maximumFractionDigits: 6 }).format(amount);
 }
 
 function formatDate(value: string | null) {

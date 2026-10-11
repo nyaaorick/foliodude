@@ -1,7 +1,6 @@
 import { z } from 'zod';
-import Decimal from 'decimal.js';
 import { getSessionContext } from '@/lib/db/session';
-import { insertTransaction, loadAccount, normalizeMemo, setBalance } from '@/lib/db/ledger';
+import { adjustBalance, insertTransaction, loadAccount, normalizeMemo } from '@/lib/db/ledger';
 
 import { AccountType } from '@/lib/types/accounts';
 import { TransactionType } from '@/lib/types/transactions';
@@ -20,7 +19,6 @@ type CreateAssetBalanceAdjustmentInput =
   z.infer<typeof CreateAssetBalanceAdjustmentSchema>;
 
 interface AssetAccountRow {
-  balance: number;
   currency: string;
   type: AccountType;
 }
@@ -49,14 +47,14 @@ export async function createAssetBalanceAdjustment(
     const account = await loadAccount<AssetAccountRow>(
       tx,
       accountId,
-      'balance, currency, type',
+      'currency, type',
     );
 
     if (account.type !== AccountType.ASSET) {
       throw new Error('Account must be an asset account');
     }
 
-    const transactionId = await insertTransaction(tx, {
+    const adjustment = await insertTransaction(tx, {
       type: isCredit ? TransactionType.INCOME : TransactionType.EXPENSE,
       amount: Math.abs(amount),
       currency: account.currency,
@@ -68,8 +66,8 @@ export async function createAssetBalanceAdjustment(
       transaction_date: date,
     });
 
-    await setBalance(tx, accountId, new Decimal(account.balance).plus(amount).toNumber());
+    await adjustBalance(tx, accountId, amount);
 
-    return { transaction_id: transactionId };
+    return { transaction_id: adjustment.id };
   });
 }
