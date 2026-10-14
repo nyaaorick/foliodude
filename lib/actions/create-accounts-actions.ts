@@ -231,24 +231,26 @@ async function createShareAccount(tx: Tx, input: ShareAccountInput): Promise<Acc
   return loadCreatedAccount(tx, id);
 }
 
-export async function createAccount(input: CreateAccountInput): Promise<Account> {
-  const { db } = await getSessionContext();
+export async function createAccountWithinTransaction(tx: Tx, input: CreateAccountInput): Promise<Account> {
   const parsed = CreateAccountSchema.safeParse(input);
   if (!parsed.success) {
     throw new Error(parsed.error.issues[0]?.message ?? 'Invalid account input');
   }
 
-  return db.transaction(async (tx) => {
-    switch (parsed.data.type) {
-      case AccountType.SHARE:
-        return createShareAccount(tx, requireShareAccountInput(parsed.data));
-      case AccountType.AIRLINE_MILES:
-        return createAirlineMilesAccount(tx, parsed.data);
-      case AccountType.LIABILITY:
-        return createLiabilityAccount(tx, parsed.data);
-      case AccountType.ASSET:
-      default:
-        return createAssetAccount(tx, parsed.data);
-    }
-  });
+  switch (parsed.data.type) {
+    case AccountType.SHARE:
+      return createShareAccount(tx, requireShareAccountInput(parsed.data));
+    case AccountType.AIRLINE_MILES:
+      return createAirlineMilesAccount(tx, parsed.data);
+    case AccountType.LIABILITY:
+      return createLiabilityAccount(tx, parsed.data);
+    case AccountType.ASSET:
+    default:
+      return createAssetAccount(tx, parsed.data);
+  }
+}
+
+export async function createAccount(input: CreateAccountInput): Promise<Account> {
+  const { db } = await getSessionContext();
+  return db.transaction((tx) => createAccountWithinTransaction(tx, input));
 }

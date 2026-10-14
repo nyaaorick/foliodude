@@ -47,15 +47,19 @@ describe('snapshot round-trip', () => {
     );
 
     await setApiKey(source.db, 'finnhub', 'secret-key-1234');
+    await source.db.query("INSERT INTO device_ai_settings VALUES (1, $1::jsonb)", [JSON.stringify({ backend: 'local', local: { kind: 'folder', modelId: 'private-source-model', label: 'Private folder' } })]);
 
     const snapshot = await buildSnapshot(source.db, WRITER);
 
     // The key must not even be present in the payload that would reach Drive.
     expect(JSON.stringify(snapshot)).not.toContain('secret-key-1234');
+    expect(JSON.stringify(snapshot)).not.toContain('private-source-model');
 
     // A second device with its own pre-existing API key.
     const target = { db: await createMemoryDb() };
     await setApiKey(target.db, 'finnhub', 'target-key-9999');
+    const ownAi = { backend: 'remote', local: null };
+    await target.db.query("INSERT INTO device_ai_settings VALUES (1, $1::jsonb)", [JSON.stringify(ownAi)]);
 
     await restoreSnapshot(target.db, snapshot);
 
@@ -73,6 +77,7 @@ describe('snapshot round-trip', () => {
     // The target's own device-local key survived the restore.
     const secrets = await target.db.query<{ api_key: string }>('SELECT api_key FROM device_secrets');
     expect(secrets.rows).toEqual([{ api_key: 'target-key-9999' }]);
+    expect((await target.db.query<{ config: unknown }>('SELECT config FROM device_ai_settings')).rows).toEqual([{ config: ownAi }]);
 
     // The restored identity column must not hand out a number already in use.
     await target.db.query(

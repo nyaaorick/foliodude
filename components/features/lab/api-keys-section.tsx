@@ -1,3 +1,4 @@
+import { RemoteApiSettings } from '@/features/ai/ui/remote-api-settings';
 import { useState } from 'react';
 import { listApiKeyStatus, removeApiKey, saveApiKey } from '@/lib/actions/api-key-actions';
 import type { ApiKeyStatus } from '@/lib/actions/api-key-actions';
@@ -9,7 +10,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 
-const PROVIDER_COPY: Record<ApiKeyProvider, { title: string; hint: string }> = {
+const PROVIDER_COPY: Record<Exclude<ApiKeyProvider, 'llm'>, { title: string; hint: string }> = {
   exchangerate: {
     title: 'Exchange rates',
     hint: 'ExchangeRate-API key. Without one every currency falls back to 1:1.',
@@ -18,19 +19,13 @@ const PROVIDER_COPY: Record<ApiKeyProvider, { title: string; hint: string }> = {
     title: 'Share prices',
     hint: 'Finnhub key, used by "Refresh Prices" on share accounts.',
   },
-  llm: {
-    title: 'LLM (Create by intent)',
-    hint: 'Any OpenAI-compatible chat-completions API: OpenAI, Gemini, OpenRouter, a local server.',
-  },
+
 };
 
-function ProviderForm({ status }: { status: ApiKeyStatus }) {
+function ProviderForm({ status }: { status: Omit<ApiKeyStatus, 'provider'> & { provider: Exclude<ApiKeyProvider, 'llm'> } }) {
   const { title, hint } = PROVIDER_COPY[status.provider];
-  const isLlm = status.provider === 'llm';
 
   const [apiKey, setApiKey] = useState('');
-  const [baseUrl, setBaseUrl] = useState(status.endpoint?.baseUrl ?? '');
-  const [model, setModel] = useState(status.endpoint?.model ?? '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -51,9 +46,7 @@ function ProviderForm({ status }: { status: ApiKeyStatus }) {
   const save = () =>
     run(() =>
       saveApiKey(
-        isLlm
-          ? { provider: 'llm', apiKey, baseUrl, model }
-          : { provider: status.provider as 'exchangerate' | 'finnhub', apiKey },
+        { provider: status.provider, apiKey },
       ),
     );
 
@@ -69,28 +62,7 @@ function ProviderForm({ status }: { status: ApiKeyStatus }) {
         <p className="mt-1 text-xs text-muted-foreground">{hint}</p>
       </div>
 
-      {isLlm && (
-        <>
-          <div className="space-y-1.5">
-            <Label htmlFor="llm-base-url">Base URL</Label>
-            <Input
-              id="llm-base-url"
-              placeholder="https://api.openai.com/v1"
-              value={baseUrl}
-              onChange={(event) => setBaseUrl(event.target.value)}
-            />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="llm-model">Model</Label>
-            <Input
-              id="llm-model"
-              placeholder="gpt-4o-mini"
-              value={model}
-              onChange={(event) => setModel(event.target.value)}
-            />
-          </div>
-        </>
-      )}
+
 
       <div className="space-y-1.5">
         <Label htmlFor={`${status.provider}-key`}>API key</Label>
@@ -141,13 +113,10 @@ export function ApiKeysSection() {
       <Loaded state={state}>
         {(statuses) => (
           <div className="space-y-3">
-            {statuses.map((status) => (
-              // Remount when the stored value changes, so the fields show what
-              // was actually saved (normalized, or cleared) rather than what was typed.
-              <ProviderForm
-                key={`${status.provider}|${status.masked}|${status.endpoint?.baseUrl}|${status.endpoint?.model}`}
-                status={status}
-              />
+            {statuses.map((status) => status.provider === 'llm' ? (
+              <RemoteApiSettings key={`${status.provider}|${status.masked}|${status.endpoint?.baseUrl}|${status.endpoint?.model}`} status={status} />
+            ) : (
+              <ProviderForm key={`${status.provider}|${status.masked}`} status={{ ...status, provider: status.provider }} />
             ))}
           </div>
         )}

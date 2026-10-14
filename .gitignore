@@ -27,3 +27,6 @@ yarn-error.log*
 
 # typescript
 *.tsbuildinfo
+
+# isolated AI harness reports and browser profiles
+/.artifacts/
