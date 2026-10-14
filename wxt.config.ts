@@ -8,6 +8,9 @@ export default defineConfig({
     name: 'FolioDude',
     description: 'Local-first personal finance tracker. Your data never leaves your device.',
     version: '0.1.0',
+    content_security_policy: {
+      extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; worker-src 'self' blob:",
+    },
     // `storage` backs WXT's browser.storage helpers; the financial data itself
     // lives in IndexedDB/OPFS via PGLite (Phase 2), which needs no permission.
     // `identity` backs the OAuth flow (launchWebAuthFlow + getRedirectURL).
@@ -34,6 +37,7 @@ export default defineConfig({
     },
   },
   vite: () => ({
+    cacheDir: 'node_modules/.vite-wxt',
     plugins: [tailwindcss()],
   }),
 });

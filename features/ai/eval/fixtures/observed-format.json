@@ -1,0 +1,95 @@
+[
+  {
+    "id": "natural-open-en-2-combined-envelopes-1",
+    "text": "set a new Travel Fund 2 account, with 468 assest",
+    "accounts": [],
+    "raw": "```json\n{\"steps\":[],\"clarification\":\"What is the name of the Travel Fund 2 account? What currency should it be in? What is the initial balance? What is the credit limit? What is the reward currency? What is the amount to transfer? What is the source account? What is the destination account? What is the target amount? What is the memo?\"}\n```",
+    "expectedStage": "format",
+    "category": "combined-envelopes",
+    "source": "edge-regression-ledger-2026-10-14T04-44-19.132Z.json"
+  },
+  {
+    "id": "natural-debt-en-combined-envelopes-2",
+    "text": "Add a card called Amex Blue; I already owe $73 on it.",
+    "accounts": [],
+    "raw": "```json\n{\"steps\":[],\"clarification\":\"You already owe $73 on the Amex Blue card. Do you want to transfer that amount to a savings account or keep it as a liability?\"}\n```",
+    "expectedStage": "format",
+    "category": "combined-envelopes",
+    "source": "edge-regression-ledger-2026-10-14T04-44-19.132Z.json"
+  },
+  {
+    "id": "natural-open-en-3-invalid-json-or-extra-text-1",
+    "text": "set a new Daily Cash 3 account, with 250 assest",
+    "accounts": [],
+    "raw": "```json\n{\"steps\":[]}\n```\n\nBrief explanation of what was done.",
+    "expectedStage": "format",
+    "category": "invalid-json-or-extra-text",
+    "source": "edge-regression-ledger-2026-10-14T04-44-19.132Z.json"
+  },
+  {
+    "id": "natural-all-zh-1-invalid-json-or-extra-text-2",
+    "text": "零钱包剩多少就搬多少去Main Bank吧。",
+    "accounts": [
+      {
+        "name": "Main Bank",
+        "type": "ASSET",
+        "currency": "USD",
+        "balance": 243,
+        "credit_limit": null
+      },
+      {
+        "name": "零钱包",
+        "type": "ASSET",
+        "currency": "USD",
+        "balance": 57,
+        "credit_limit": null
+      }
+    ],
+    "raw": "```json\n{\"steps\":[]}\n```\n\nBrief explanation: The request is a suggestion to move money from \"零钱包\" (Zero Wallet) to \"Main Bank\" (Main Bank). No explicit action is requested, so no steps are generated.",
+    "expectedStage": "format",
+    "category": "invalid-json-or-extra-text",
+    "source": "edge-regression-ledger-2026-10-14T04-44-19.132Z.json"
+  },
+  {
+    "id": "natural-open-zh-1-wrong-envelope-1",
+    "text": "账户列表添上“日常备用金 1”吧，资产余额57美元。",
+    "accounts": [],
+    "raw": "```json\n{\"accounts\":[\"日常备用金 1\"]}\n```",
+    "expectedStage": "format",
+    "category": "wrong-envelope",
+    "source": "edge-regression-ledger-2026-10-14T04-44-19.132Z.json"
+  },
+  {
+    "id": "natural-open-zh-2-wrong-envelope-2",
+    "text": "帮我弄个日常备用金 2账户，里面先放499美金。",
+    "accounts": [],
+    "raw": "```json\n{\n  \"accounts\": [\n    {\n      \"name\": \"日常备用金\",\n      \"type\": \"ASSET\",\n      \"currency\": \"USD\",\n      \"balance\": 499.00\n    }\n  ]\n}\n```",
+    "expectedStage": "format",
+    "category": "wrong-envelope",
+    "source": "edge-regression-ledger-2026-10-14T04-44-19.132Z.json"
+  },
+  {
+    "id": "repayment-schema-fields-1",
+    "text": "从实机钱包转账10美元还款到实机信用卡。",
+    "accounts": [
+      {
+        "name": "实机信用卡",
+        "type": "LIABILITY",
+        "currency": "USD",
+        "balance": -20,
+        "credit_limit": 1000
+      },
+      {
+        "name": "实机钱包",
+        "type": "ASSET",
+        "currency": "USD",
+        "balance": 100,
+        "credit_limit": null
+      }
+    ],
+    "raw": "```json\n{\"steps\":[{\"action\":\"transfer\",\"from\":\"实机钱包\",\"to\":\"实机信用卡\",\"amount\":\"10\",\"fromCurrency\":\"USD\",\"toCurrency\":\"USD\",\"targetAmount\":null,\"memo\":\"还款\"}]}\n```",
+    "expectedStage": "format",
+    "category": "schema-fields",
+    "source": "edge-regression-ledger-2026-10-14T04-44-19.132Z.json"
+  }
+]

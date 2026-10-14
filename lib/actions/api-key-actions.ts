@@ -1,13 +1,12 @@
+import { getLlmEndpoint, RemoteApiKeySchema, type LlmEndpoint } from '@/features/ai/application/remote-settings';
 import { z } from 'zod';
 import { getSessionContext } from '@/lib/db/session';
 import {
   clearApiKey,
   getApiKey,
-  getLlmEndpoint,
   maskApiKey,
   setApiKey,
   type ApiKeyProvider,
-  type LlmEndpoint,
 } from '@/lib/db/settings';
 import { parseOrThrow } from './result';
 
@@ -17,15 +16,7 @@ const ApiKeySchema = z.string().trim().min(1, 'API key cannot be empty');
 
 const SetApiKeySchema = z.discriminatedUnion('provider', [
   z.object({ provider: z.enum(['exchangerate', 'finnhub']), apiKey: ApiKeySchema }),
-  // Any OpenAI-compatible chat-completions API: OpenAI, Gemini's compatibility
-  // endpoint, OpenRouter, a local server. Address and model are the user's call,
-  // so neither has a default.
-  z.object({
-    provider: z.literal('llm'),
-    apiKey: ApiKeySchema,
-    baseUrl: z.string().trim().url('Base URL must be a full http(s) address').regex(/^https?:\/\//),
-    model: z.string().trim().min(1, 'Model cannot be empty'),
-  }),
+  RemoteApiKeySchema,
 ]);
 
 const ProviderSchema = z.object({ provider: z.enum(['exchangerate', 'finnhub', 'llm']) });

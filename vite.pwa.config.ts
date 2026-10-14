@@ -62,7 +62,7 @@ self.addEventListener('activate', (event) => {
   // One cache per build; drop every older one so a stale shell cannot survive.
   event.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((key) => key !== CACHE).map((key) => caches.delete(key))))
+      .then((keys) => Promise.all(keys.filter((key) => key.startsWith('foliodude-') && key !== CACHE).map((key) => caches.delete(key))))
       .then(() => self.clients.claim()),
   );
 });
@@ -98,6 +98,7 @@ self.addEventListener('fetch', (event) => {
 export default defineConfig({
   root: path.resolve(__dirname, 'pwa'),
   base: './',
+  cacheDir: path.resolve(__dirname, 'node_modules/.vite-pwa'),
   publicDir: path.resolve(__dirname, 'pwa/public'),
   plugins: [react(), tailwindcss(), serviceWorker()],
   resolve: {

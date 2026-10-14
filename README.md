@@ -69,6 +69,7 @@ pwa/               PWA shell: index.html, main.tsx, manifest + icons
 components/app/    AppRoot — the router shell both targets mount
 components/        ui/ (primitives) and features/ (domain UI)
 pages/             route components
+features/ai/       AI application, protocol, providers, runtime, UI and repeatable evaluation
 lib/auth/          Google OAuth (PKCE, no client secret)
 lib/data/          revalidation bus + useLiveQuery (client-side data layer)
 lib/sync/          Drive snapshot sync, device identity, single-writer rule
@@ -82,7 +83,7 @@ assets/globals.css single Tailwind entry, shared by both targets
 
 Phase 1 (build tooling) and Phase 2 (local database layer) are done: every
 file in `lib/actions/` runs directly against PGlite inside a transaction, with
-144 tests passing against a real in-memory database (not a mocked query
+152 tests passing against a real in-memory database (not a mocked query
 builder). `npm run compile` is clean across the whole project.
 
 Phase 3 (UI) is done: `pages/*.tsx` read real data through `useLiveQuery`, and
@@ -122,6 +123,20 @@ operational form for coding agents, in
 
 Full roadmap, open risks, and design rationale for each phase live in
 [PLAN.md](PLAN.md).
+
+## AI intent entry
+
+The AI module, protocol, providers, runtime, UI and repeatable tests live in
+[`features/ai`](features/ai/README.md). Start there for the architecture, failure
+audit, evaluation commands and solution proposals. Intent entry uses explicit
+preview/edit/Save; current local-model accuracy gates remain failed and the
+feature is Experimental.
+
+```sh
+npm run ai:test
+npm run ai:verify -- --ui-repeat 2
+npm run ai:eval -- --full
+```
 
 ## Community
 

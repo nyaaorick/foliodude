@@ -475,7 +475,7 @@ CREATE TABLE net_worth_snapshots (
 CREATE TABLE device_secrets (
   provider   TEXT        PRIMARY KEY CHECK (provider IN ('exchangerate', 'finnhub', 'llm')),
   api_key    TEXT        NOT NULL CHECK (btrim(api_key) <> ''),
-  -- The 'llm' provider is any OpenAI-compatible chat-completions endpoint, so it
+  -- The 'llm' provider is any OpenAI-compatible Responses endpoint, so it
   -- needs an address and a model as well as a key. NULL for every other provider.
   base_url   TEXT,
   model      TEXT,
@@ -489,4 +489,11 @@ CREATE TABLE device_secrets (
       ELSE base_url IS NULL AND model IS NULL
     END
   )
+);
+
+-- Device-local AI selection and model source. No credentials or model bytes;
+-- excluded from lib/db/backup.ts's explicit ledger table list.
+CREATE TABLE device_ai_settings (
+  id SMALLINT PRIMARY KEY CHECK (id = 1),
+  config JSONB NOT NULL CHECK (config->>'backend' IN ('remote', 'local'))
 );
