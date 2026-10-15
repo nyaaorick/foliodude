@@ -41,3 +41,14 @@ export function planMatches(actions: MlpAction[], expected: ExpectedAction[]): b
     return (actual as unknown as Record<string, unknown>)[key] === value;
   }));
 }
+
+/** A successful request must produce a validated draft, not merely matching rejected fields. */
+export function planOutcomeMatches(fixture: HarnessCase, status: string | undefined, actions: MlpAction[], signal: AbortSignal): boolean {
+  switch (fixture.expected.outcome) {
+    case 'clarification': return status === 'clarification';
+    case 'no_action': return status === 'no_action';
+    case 'cancel': return signal.aborted && signal.reason?.name === 'AbortError';
+    case 'success': return status === 'ready' && planMatches(actions, expectedPlan(fixture));
+    case 'reject': return planMatches(actions, expectedPlan(fixture));
+  }
+}

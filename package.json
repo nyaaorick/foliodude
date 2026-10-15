@@ -25,9 +25,7 @@
     "ai:verify": "node features/ai/eval/verify.mjs",
     "ai:eval": "node features/ai/eval/batch.mjs",
     "ai:smoke": "node features/ai/eval/run.mjs --browser edge --seed 20261012 --cases natural-user-single,natural-user-all,natural-sequence",
-    "ai:report": "node features/ai/eval/report-tools.mjs",
-    "ai:diagnose": "node features/ai/eval/diagnose.mjs",
-    "ai:results": "node features/ai/eval/evaluation-report.mjs"
+    "ai:report": "node features/ai/eval/report.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.3.0",
@@ -37,7 +35,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "decimal.js": "^10.6.0",
-    "everything-webgpu": "https://github.com/nyaaorick/everything-webgpu/releases/download/v0.1.3/everything-webgpu-0.1.3.tgz",
+    "everything-webgpu": "https://github.com/nyaaorick/everything-webgpu/releases/download/v0.1.4/everything-webgpu-0.1.4.tgz",
     "lucide-react": "^0.577.0",
     "openai": "6.49.0",
     "react": "19.2.3",

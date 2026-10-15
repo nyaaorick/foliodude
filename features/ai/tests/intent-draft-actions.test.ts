@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const { mockGetSessionContext, mockWithLocalClient } = vi.hoisted(() => ({ mockGetSessionContext: vi.fn(), mockWithLocalClient: vi.fn() }));
 vi.mock('@/lib/db/session', () => ({ getSessionContext: mockGetSessionContext }));
 vi.mock('@/features/ai/runtime/local-runtime', () => ({ withLocalClient: mockWithLocalClient }));
-import { executeMlp, prepareMlp, MLP_LIMITS } from '@/features/ai/protocol/mlp';
+import { executeMlp, prepareMlp, MLP_LIMITS, MLP_OUTPUT_FORMAT, ACTION_REGISTRY } from '@/features/ai/protocol/mlp';
 import { prepareIntentDraft, commitIntentDraft, reviewIntentDraft, refreshIntentDraft } from '@/features/ai/application/intent-draft-actions';
 import type { IntentDraft } from '@/features/ai/application/intent-draft';
 import { saveAiSettings } from '@/features/ai/application/ai-settings-actions';
@@ -13,8 +13,18 @@ import { adjustBalance } from '@/lib/db/ledger';
 import type { SessionContext } from '@/lib/db/session';
 const newAccount = { action: 'create_account', name: 'Cash', balance: 50 };
 const expense = (amount: number) => ({ action: 'expense', account: 'Cash', amount });
-function mockPlan(value: unknown) {
-  vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ id: 'resp_test', object: 'response', status: 'completed', output: [{ type: 'message', id: 'msg_test', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: JSON.stringify(value), annotations: [] }] }] }), { headers: { 'Content-Type': 'application/json' } }));
+// Endpoints echo the applied text.format; the plan travels inside the intent-tagged wire envelope.
+const INTENTS: Record<string, string> = Object.fromEntries(Object.values(ACTION_REGISTRY).map(tool => [tool.name, tool.plannerIntent]));
+function wire(value: unknown) {
+  const plan = value as { steps?: Array<{ action: string }>; clarification?: string };
+  if (plan.clarification !== undefined) return { intent: 'ask', ...plan };
+  if (!Array.isArray(plan.steps)) return value;
+  if (!plan.steps.length) return { intent: 'none' };
+  return { intent: new Set(plan.steps.map(step => step.action)).size > 1 ? 'multi' : INTENTS[plan.steps[0].action], ...plan };
+}
+const response = (value: unknown, extra: object = { text: { format: MLP_OUTPUT_FORMAT } }) => ({ id: 'resp_test', object: 'response', status: 'completed', output: [{ type: 'message', id: 'msg_test', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: JSON.stringify({ result: wire(value) }), annotations: [] }] }], ...extra });
+function mockPlan(value: unknown, extra?: object) {
+  vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(response(value, extra)), { headers: { 'Content-Type': 'application/json' } }));
 }
 async function draft(text: string, steps: unknown[]): Promise<IntentDraft> {
   mockPlan({ steps });
@@ -47,16 +57,26 @@ describe('reviewable intent entry', () => {
       const body = JSON.parse(init?.body as string);
       expect(body.store).toBe(false); expect(body.input).toContain('set up Cash');
       expect(body.instructions).toContain('LIABILITY'); expect(body.input).not.toContain('accountId');
+      expect(body.text).toEqual({ format: MLP_OUTPUT_FORMAT }); expect(body.instructions + body.input).not.toMatch(/JSON|Markdown|brace/i);
     }
+  });
+  it('fails explicitly when an endpoint ignores native JSON output or truncates it', async () => {
+    mockPlan({ steps: [newAccount] }, {});
+    await expect(prepareIntentDraft({ text: 'set up Cash with 50' })).rejects.toThrow('did not confirm json_schema');
+    mockPlan({ steps: [newAccount] }, { status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' }, text: { format: MLP_OUTPUT_FORMAT } });
+    await expect(prepareIntentDraft({ text: 'set up Cash with 50' })).rejects.toMatchObject({ stage: 'format' });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect((await ctx.db.query('SELECT * FROM accounts')).rows).toHaveLength(0);
   });
   it('uses the same local contract and rejects malformed, ungrounded or ambiguous extraction without writes', async () => {
     await saveAiSettings({ backend: 'local', local: { kind: 'folder', modelId: 'imported', label: 'My model' } });
     const create = vi.fn(); mockWithLocalClient.mockImplementation(async (_id, work) => work({ responses: { create } }));
     await seedAccount(ctx, { name: 'Cash', balance: 50 });
-    const answer = (value: unknown) => create.mockResolvedValueOnce({ status: 'completed', output_text: JSON.stringify(value) });
+    const answer = (value: unknown) => create.mockResolvedValueOnce({ status: 'completed', output: [], output_text: JSON.stringify({ result: wire(value) }), text: { format: MLP_OUTPUT_FORMAT } });
     answer({ steps: [expense(10)] });
     const result = await prepareIntentDraft({ text: 'spend 10 from Cash' });
     expect(result.status).toBe('ready'); expect(fetch).not.toHaveBeenCalled(); expect(create).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls[0][0].text).toEqual({ format: MLP_OUTPUT_FORMAT });
     for (const [text, value] of [
       ['create 中文钱包 with 100', { steps: [{ action: 'create_account', name: 'Chinese Wallet', balance: 100 }] }],
       ['spend 10 from Cash', { steps: [expense(999)] }],
@@ -64,6 +84,9 @@ describe('reviewable intent entry', () => {
       ['spend 10 from Cash', expense(10)],
       ['spend 10 from Cash on 2026-02-30', { steps: [{ ...expense(10), date: '2026-02-30' }] }],
     ] as const) { answer(value); await expect(prepareIntentDraft({ text })).rejects.toThrow(); }
+    // everything-webgpu reports a post-decode schema rejection as a failed response; it must stay a format failure.
+    create.mockResolvedValueOnce({ status: 'failed', error: { code: 'server_error', message: 'Generated JSON does not match schema at #/result.' }, output_text: '{"result":{}}' });
+    await expect(prepareIntentDraft({ text: 'spend 10 from Cash' })).rejects.toMatchObject({ stage: 'format', output: '{"result":{}}' });
     await seedAccount(ctx, { name: 'Cash', balance: 50 }); answer({ steps: [expense(10)] });
     await expect(prepareIntentDraft({ text: 'spend 10 from Cash' })).rejects.toThrow('Several accounts');
     expect(await allTransactions(ctx.db)).toHaveLength(0);

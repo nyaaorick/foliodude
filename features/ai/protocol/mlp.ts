@@ -2,7 +2,8 @@ import { z } from 'zod';
 import type { Tx } from '@/lib/db/tx';
 import { localToday } from '@/lib/utils/local-date';
 import { AccountType, type CurrencyId } from '@/lib/types/accounts';
-import { generateAiText } from '@/features/ai/providers/text-client';
+import { AiOutputError, generateAiText } from '@/features/ai/providers/text-client';
+import { jsonSchemaFormat, withoutOptionalNulls } from '@/features/ai/protocol/output-format';
 import { ACTION_REGISTRY, normalizeName, type MlpAccount, type MlpActionName, type MlpActionResult } from '@/features/ai/protocol/action-registry';
 export { ACTION_REGISTRY } from '@/features/ai/protocol/action-registry';
 
@@ -14,19 +15,41 @@ export interface MlpStep { name: MlpActionName; arguments: Record<string, unknow
 export interface MlpPlan { steps: MlpStep[]; actions: MlpAction[]; clarification?: string }
 export type MlpAction = z.infer<typeof MlpActionSchema>;
 
+// The discriminator comes first so constrained decoding chooses the action before its fields.
+const actionSchema = <T extends (typeof ACTION_REGISTRY)[MlpActionName]>(tool: T) =>
+  z.object({ action: z.literal(tool.name as T['name']) }).extend(tool.extractionSchema.shape as T['extractionSchema']['shape']).strict();
 export const MlpActionSchema = z.discriminatedUnion('action', [
-  ACTION_REGISTRY.create_account.extractionSchema.extend({ action: z.literal(ACTION_REGISTRY.create_account.name) }),
-  ACTION_REGISTRY.expense.extractionSchema.extend({ action: z.literal(ACTION_REGISTRY.expense.name) }),
-  ACTION_REGISTRY.transfer.extractionSchema.extend({ action: z.literal(ACTION_REGISTRY.transfer.name) }),
+  actionSchema(ACTION_REGISTRY.create_account), actionSchema(ACTION_REGISTRY.expense), actionSchema(ACTION_REGISTRY.transfer),
 ]);
+// The model fills only the registry's planner fields; the full action schema validates drafts and edits.
+const plannerStep = (tool: (typeof ACTION_REGISTRY)[MlpActionName]) => z.object({ action: z.literal(tool.name) }).extend(tool.plannerSchema.shape).strict();
+type PlannerStep = z.infer<ReturnType<typeof plannerStep>>;
+const TOOLS = Object.values(ACTION_REGISTRY);
+const steps = (item: z.ZodType, min: number) => z.array(item).min(min).max(MLP_LIMITS.steps);
+// The intent comes first, so the model classifies the whole request before filling any fields. Each branch fixes
+// the plan's shape: none has no steps, ask has only a question, a single-action intent admits only that action.
+const MlpWireSchema = z.object({ result: z.discriminatedUnion('intent', [
+  z.object({ intent: z.literal('none') }).strict(),
+  z.object({ intent: z.literal('ask'), clarification: z.string().trim().min(1) }).strict(),
+  ...TOOLS.map(tool => z.object({ intent: z.literal(tool.plannerIntent), steps: steps(plannerStep(tool), 1) }).strict()),
+  z.object({ intent: z.literal('multi'), steps: steps(z.discriminatedUnion('action', TOOLS.map(plannerStep) as [ReturnType<typeof plannerStep>]), 2) }).strict(),
+] as [z.ZodObject, ...z.ZodObject[]]) }).strict();
+export const MLP_OUTPUT_FORMAT = jsonSchemaFormat('ledger_plan', MlpWireSchema);
+type MlpOutput = { steps: PlannerStep[] } | { clarification: string };
+/** The only wire-to-internal conversion: drop strict-mode nulls for optional fields, then map the intent back to the internal union. */
+function fromWire(raw: string): MlpOutput {
+  let value: unknown;
+  try { value = JSON.parse(raw); }
+  catch { throw Error(`Invalid AI plan JSON: ${raw}`); }
+  const wire = (value as { result?: { steps?: unknown } } | null)?.result;
+  if (Array.isArray(wire?.steps)) wire.steps = wire.steps.map(step => withoutOptionalNulls(step,
+    TOOLS.find(tool => tool.name === (step as { action?: unknown })?.action)?.plannerSchema.shape ?? {}));
+  const result = MlpWireSchema.parse(value).result as { intent: string; clarification?: string; steps?: PlannerStep[] };
+  if (result.intent === 'ask') return { clarification: result.clarification! };
+  return { steps: result.steps ?? [] };
+}
 export class MlpError extends Error {
   constructor(public readonly stage: 'format' | 'validation', message: string, public readonly output?: unknown) { super(message); }
-}
-function parse(raw: string): unknown {
-  const text = raw.replace(/^\s*<think>\s*<\/think>\s*/, '').trim();
-  const fenced = /^```(?:json)?\s*\n([\s\S]*?)\n```$/i.exec(text);
-  try { return JSON.parse(fenced ? fenced[1] : text); }
-  catch { throw Error(`Invalid AI plan JSON: ${raw}`); }
 }
 function context(text: string, accounts: MlpAccount[]) {
   if (text.length > MLP_LIMITS.inputChars) throw Error('Request exceeds the MLP input budget. Split it into smaller requests.');
@@ -38,16 +61,16 @@ function context(text: string, accounts: MlpAccount[]) {
   return { candidates, tools };
 }
 function compile(request: ReturnType<typeof context>, today: string) {
-  const specs = request.tools.map(tool => `${tool.name}: ${tool.description}; ${Object.entries(tool.extractionSchema.shape).map(([key, schema]) => `${key}: ${schema.description}`).join('; ')}`);
-  const instructions = `Extract Chinese/English ledger actions. Output one JSON object with only a steps array of flat actions. No Markdown or explanations. No action: {"steps":[]}. Missing required information: {"clarification":"short question"}. Never combine steps and clarification.
-Execute only explicit requests or reported spending. Negation, questions, hypotheticals, greetings: no action. Include ALL steps in order; resolve pronouns. Never create an existing account to spend/transfer.
+  const specs = request.tools.map(tool => `${tool.name}: ${tool.description}; ${Object.entries(tool.plannerSchema.shape).map(([key, schema]) => `${key}: ${schema.description}`).join('; ')}`);
+  // Output syntax is enforced by MLP_OUTPUT_FORMAT; instructions carry only ledger semantics.
+  const intents = request.tools.map(tool => `${tool.plannerIntent} (only ${tool.name} steps)`).join(', ');
+  const instructions = `Extract Chinese/English ledger actions. First classify the whole request: ${intents}, multi (several different kinds of steps), none (nothing should change), ask (required information is missing; ask one short question).
+Execute only explicit requests or reported spending. Negation, questions, hypotheticals, greetings: none. Include ALL steps in order; resolve pronouns. Never create an existing account to spend/transfer.
 Copy exact names, casing, digits and spaces; exclude generic account/账户 suffixes. A category alone can be the account name.
 Opening defaults ASSET/USD/0. Credit cards, charge cards, owed money: LIABILITY with negative balance. Initial balance is not a transaction.
-Transfer amount="all" means remaining balance after prior steps. Do not guess money. Missing amount/source/destination: clarify. Cross-currency needs explicit targetAmount. Amounts/balances are JSON numbers, never strings. Omit unknown optional fields, no null. Today ${today}.
-Examples: {"steps":[{"action":"create_account","name":"Maple"}]}; {"steps":[{"action":"transfer","from":"Pocket","to":"Savings","amount":"all"}]}.
-Fields:
-${specs.join('\n')}
-JSON only. Stop after the closing brace.`;
+Transfer amount "all" means remaining balance after prior steps. Do not guess money or unstated details. Missing amount/source/destination: ask. Cross-currency needs explicit targetAmount. Today ${today}.
+Actions:
+${specs.join('\n')}`;
   if (instructions.length > MLP_LIMITS.instructionChars) throw Error('MLP instructions exceed the context budget. Split the request.');
   return instructions;
 }
@@ -57,12 +80,14 @@ export async function prepareMlp(text: string, accounts: MlpAccount[], signal?: 
   const eligible = accounts.filter(account => account.type === AccountType.ASSET || account.type === AccountType.LIABILITY);
   const request = context(text, eligible);
   const instructions = compile(request, today);
-  const input = JSON.stringify({ accounts: request.candidates.map(({ name, type, currency }) => ({ name, type, currency })), request: text }) + '\nReturn only the JSON object. No Markdown or explanation.';
+  const input = JSON.stringify({ accounts: request.candidates.map(({ name, type, currency }) => ({ name, type, currency })), request: text });
   for (const observer of observers) observer({ steps: 0, actions: request.tools.map(tool => tool.name), candidates: request.candidates.length,
     excludedAccounts: eligible.length - request.candidates.length, instructionChars: instructions.length, inputChars: input.length });
-  const raw = await generateAiText(instructions, input, signal);
-  let output: { steps: MlpAction[] } | { clarification: string };
-  try { output = z.union([z.object({ steps: z.array(MlpActionSchema).max(MLP_LIMITS.steps) }).strict(), z.object({ clarification: z.string().trim().min(1) }).strict()]).parse(parse(raw)); }
+  let raw: string;
+  try { raw = await generateAiText(instructions, input, MLP_OUTPUT_FORMAT, signal); }
+  catch (cause) { throw cause instanceof AiOutputError ? new MlpError('format', cause.message, cause.output) : cause; }
+  let output: MlpOutput;
+  try { output = fromWire(raw); }
   catch (cause) { throw new MlpError('format', cause instanceof Error ? cause.message : String(cause), raw); }
   signal?.throwIfAborted();
   if ('clarification' in output) return { steps: [], actions: [], clarification: output.clarification };

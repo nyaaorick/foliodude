@@ -1,22 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { prepareIntentDraft, commitIntentDraft, refreshIntentDraft, discardIntentDraft, reviewIntentDraft, IntentDraftError, type IntentReceipt } from '@/features/ai/application/intent-draft-actions';
 import { intentError, type IntentDraft, type IntentReview } from '@/features/ai/application/intent-draft';
-import { normalizeName } from '@/features/ai/protocol/action-registry';
-import { Field, OptionSelect, ReadOnlyValue } from '@/components/app/form-fields';
+import { Field } from '@/components/app/form-fields';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { AccountType, SUPPORTED_CURRENCIES, type CurrencyId } from '@/lib/types/accounts';
-import { EXPENSE_CATEGORIES } from '@/lib/data/expense-categories';
-import { REWARD_CURRENCY_IDS } from '@/lib/types/rewards';
+import { type CurrencyId } from '@/lib/types/accounts';
 import { revalidate } from '@/lib/data/store';
 
-type EditableAction = Record<string, unknown>;
+import { IntentActionFields, type EditableAction } from './intent-action-fields';
 type Phase = 'idle' | 'planning' | 'review' | 'saving' | 'saved';
 const money = (amount: number, currency: CurrencyId) => new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(amount);
-const currencies = Object.keys(SUPPORTED_CURRENCIES).map(value => ({ value, label: value }));
-const numeric = (value: string) => value.trim() === '' ? NaN : Number(value);
-const inputNumber = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : '';
 
 export function IntentEntry({ disabled, onBusy }: { disabled: boolean; onBusy: (busy: boolean) => void }) {
   const [text, setText] = useState('');
@@ -100,32 +93,10 @@ export function IntentEntry({ disabled, onBusy }: { disabled: boolean; onBusy: (
       <fieldset disabled={busy || disabled} className="space-y-4">
         {actions.map((action, index) => {
           const id = (key: string) => `intent-${index}-${key}`;
-          const numberField = (key: string, label: string, value = action[key], owed = false) => <Field label={label} htmlFor={id(key)}><Input id={id(key)} type="number" step="0.01" value={inputNumber(owed && typeof value === 'number' ? Math.abs(value) : value)} onChange={event => change(index, key, owed ? -Math.abs(numeric(event.target.value)) : numeric(event.target.value))} /></Field>;
-          const choices = [...draft.accounts, ...actions.slice(0, index).filter(step => step.action === 'create_account').map((step, position) => ({ id: `new-${position}`, name: String(step.name ?? ''), currency: (step.currency ?? 'USD') as CurrencyId, type: step.type ?? 'ASSET', balance: Number(step.balance ?? 0) }))];
-          const selectedAccount = (key: string) => { const currency = action[key === 'from' ? 'fromCurrency' : key === 'to' ? 'toCurrency' : 'currency']; return choices.find(account => normalizeName(account.name) === normalizeName(String(action[key] ?? '')) && (!currency || account.currency === currency)); };
-          const accountField = (key: 'account' | 'from' | 'to', label: string) => <Field label={label} htmlFor={id(key)}><OptionSelect id={id(key)} value={selectedAccount(key)?.id ?? ''} options={choices.filter(account => key !== 'from' || account.type === AccountType.ASSET).map(account => ({ value: account.id, label: `${account.name} (${account.currency})` }))} placeholder="Choose an account" onChange={value => { const account = choices.find(item => item.id === value)!; change(index, key, account.name); change(index, key === 'from' ? 'fromCurrency' : key === 'to' ? 'toCurrency' : 'currency', account.currency); }} /></Field>;
           const preview = review?.steps[index];
           return <article key={index} className="space-y-4 rounded-xl border border-border/70 bg-background/50 p-4" aria-labelledby={id('heading')}>
             <h4 id={id('heading')} className="font-medium">{index + 1}. {action.action === 'create_account' ? 'Create account' : action.action === 'expense' ? 'Record expense' : 'Transfer money'}</h4>
-            <div className="grid gap-4 sm:grid-cols-2">
-              {action.action === 'create_account' ? <>
-                <Field label="Account name" htmlFor={id('name')}><Input id={id('name')} value={String(action.name ?? '')} onChange={event => change(index, 'name', event.target.value)} /></Field>
-                <Field label="Account type" htmlFor={id('type')}><OptionSelect id={id('type')} value={String(action.type)} onChange={value => { change(index, 'type', value); if (typeof action.balance === 'number') change(index, 'balance', value === 'LIABILITY' ? -Math.abs(action.balance) : Math.abs(action.balance)); }} options={[{ value: 'ASSET', label: 'Asset / cash' }, { value: 'LIABILITY', label: 'Credit card / debt' }]} /></Field>
-                <Field label="Currency" htmlFor={id('currency')}><OptionSelect id={id('currency')} value={String(action.currency)} onChange={value => change(index, 'currency', value)} options={currencies} /></Field>
-                {numberField('balance', action.type === 'LIABILITY' ? 'Amount owed' : 'Starting balance', action.balance, action.type === 'LIABILITY')}
-                {action.type === 'LIABILITY' && <>{numberField('credit_limit', 'Credit limit')}<Field label="Reward currency" htmlFor={id('reward_currency')}><OptionSelect id={id('reward_currency')} value={String(action.reward_currency ?? 'none')} onChange={value => change(index, 'reward_currency', value === 'none' ? null : value)} options={[{ value: 'none', label: 'None' }, ...REWARD_CURRENCY_IDS.map(value => ({ value, label: value }))]} /></Field></>}
-              </> : action.action === 'expense' ? <>
-                {accountField('account', 'Paying account')}{numberField('amount', 'Expense amount')}
-                <Field label="Date" htmlFor={id('date')}><Input id={id('date')} type="date" value={String(action.date ?? draft.today)} onChange={event => change(index, 'date', event.target.value)} /></Field>
-                {selectedAccount('account')?.type === AccountType.LIABILITY ? <Field label="Category" htmlFor={id('category')}><OptionSelect id={id('category')} value={String(action.category ?? 'Other')} onChange={value => change(index, 'category', value)} options={EXPENSE_CATEGORIES.map(value => ({ value, label: value }))} /></Field> : <ReadOnlyValue label="Category">Other</ReadOnlyValue>}
-              </> : <>
-                {accountField('from', 'From')}{accountField('to', 'To')}
-                <label className="flex items-center gap-2 text-sm sm:col-span-2"><input type="checkbox" checked={action.amount === 'all'} onChange={event => change(index, 'amount', event.target.checked ? 'all' : 1)} />Entire remaining balance</label>
-                {action.amount !== 'all' && numberField('amount', 'Transfer amount')}
-                {selectedAccount('from')?.currency !== selectedAccount('to')?.currency && numberField('targetAmount', 'Amount received (destination currency)')}
-              </>}
-              {action.action !== 'create_account' && <Field label="Memo (optional)" htmlFor={id('memo')}><Input id={id('memo')} value={String(action.memo ?? '')} onChange={event => change(index, 'memo', event.target.value)} /></Field>}
-            </div>
+            <IntentActionFields action={action} index={index} actions={actions} draft={draft} change={change} />
             {preview && <div className="rounded-lg bg-muted/40 p-3 text-sm" aria-live="polite">
               <p className="font-medium">{preview.title}</p>
               {action.action === 'create_account' ? <><p>{action.type === 'LIABILITY' ? 'Amount owed: ' : 'Starting balance: '}{money(action.type === 'LIABILITY' ? Math.abs(preview.amount) : preview.amount, preview.currency)}</p><p className="text-muted-foreground">No transaction will be created.</p></> : <><p>{action.amount === 'all' ? 'Estimated transfer: ' : 'Amount: '}{money(preview.amount, preview.currency)}</p>{preview.changes.map(item => <p key={item.id} className="text-muted-foreground">{item.name}: {money(item.before, item.currency)} → {money(item.after, item.currency)}</p>)}</>}

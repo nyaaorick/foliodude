@@ -11,7 +11,11 @@ let server, browser;
 const isFirefox = process.argv.includes('--firefox');
 const extensionUuid = 'ad165a15-0468-48b5-a2f2-457194c55d20';
 const report = { surface: isFirefox ? 'Firefox installed extension' : 'PWA', mode: 'Fixed remote Responses outputs; real UI, ledger and registry. Model accuracy evaluated separately.', checks: [], calls: 0 };
-let current = { steps: [] };
+let current = { steps: [] }, ignoresFormat = false;
+// Fixed outputs are written as internal plans and sent in the intent-tagged wire form.
+const INTENTS = { create_account: 'create', expense: 'spend', transfer: 'transfer' };
+const wire = plan => plan.clarification !== undefined ? { intent: 'ask', ...plan } : !plan.steps.length ? { intent: 'none' }
+    : { intent: new Set(plan.steps.map(step => step.action)).size > 1 ? 'multi' : INTENTS[plan.steps[0].action], ...plan };
 let page;
 report.errors = [];
 try {
@@ -35,9 +39,12 @@ try {
             return req.respond({ status: 204, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST,OPTIONS', 'Access-Control-Allow-Headers': req.headers()['access-control-request-headers'] || '*' } });
         report.calls++;
         const body = JSON.parse(isFirefox ? await req.fetchPostData() : req.postData());
-        if (body.temperature !== 0 || body.max_output_tokens !== 2048 || body.store !== false || !body.instructions.includes('ledger') || !body.input.includes('request'))
+        const format = body.text?.format;
+        if (body.temperature !== 0 || body.max_output_tokens !== 2048 || body.store !== false || !body.instructions.includes('ledger') || !body.input.includes('request')
+            || format?.type !== 'json_schema' || format.strict !== true || format.name !== 'ledger_plan' || !format.schema?.properties?.result || /JSON|Markdown/.test(body.instructions + body.input))
             throw Error('Unexpected request contract');
-        return req.respond({ status: 200, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify({ id: 'resp_ui', object: 'response', status: 'completed', output: [{ type: 'message', id: 'msg_ui', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: typeof current === 'string' ? current : JSON.stringify(current), annotations: [] }] }] }) });
+        // A conforming endpoint echoes the applied format; `ignoresFormat` simulates one that silently drops it.
+        return req.respond({ status: 200, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify({ id: 'resp_ui', object: 'response', status: 'completed', ...(ignoresFormat ? {} : { text: { format } }), output: [{ type: 'message', id: 'msg_ui', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: typeof current === 'string' ? current : JSON.stringify({ result: wire(current) }), annotations: [] }] }] }) });
     };
     let rejectRequest;
     const requestFailure = new Promise((_, reject) => { rejectRequest = reject; });
@@ -139,6 +146,12 @@ try {
     await contains('The AI could not produce a valid preview');
     await contains('Technical details');
     record('Friendly error with collapsed diagnostics');
+    ignoresFormat = true; current = { steps: [] };
+    await fill('#intent-request', 'Do not transfer anything again');
+    await click('Generate preview');
+    await contains('did not confirm json_schema output');
+    ignoresFormat = false;
+    record('Endpoint without native JSON output is rejected explicitly');
     await generate('create Draft Only', [{ action: 'create_account', name: 'Draft Only' }]);
     await fill('#intent-request', 'Different request');
     await page.waitForFunction(() => !document.body.innerText.includes('Review 1 change'));

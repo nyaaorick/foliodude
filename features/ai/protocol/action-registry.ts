@@ -33,12 +33,17 @@ export type MlpActionName = keyof typeof ACTION_REGISTRY;
 interface ToolSpec<N extends string, E extends z.ZodObject, B extends z.ZodObject> {
   name: N; description: string;
   extractionSchema: E; inputSchema: B; outputSchema: z.ZodType<MlpActionResult>;
+  /** The request-level intent label for plans made only of this action. */
+  plannerIntent: string;
+  /** The fields the model extracts. The rest take their defaults and stay editable in review. */
+  plannerFields: readonly (keyof E['shape'] & string)[];
   availability(accounts: MlpAccount[], earlierCreation: boolean): string | null;
   normalize(value: z.infer<E>, context: MappingContext): z.infer<B>;
   execute(value: z.infer<B>, context: ExecutionContext): Promise<MlpActionResult>;
 }
 function tool<const N extends string, E extends z.ZodObject, B extends z.ZodObject>(spec: ToolSpec<N, E, B>) {
   return Object.freeze({ ...spec,
+    plannerSchema: z.object(Object.fromEntries(spec.plannerFields.map(key => [key, spec.extractionSchema.shape[key] as z.ZodType]))).strict(),
     annotations: Object.freeze({ readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false }),
     risk: 'ledger-write' as const, undoSupported: false,
     availability(accounts: MlpAccount[], earlierCreation: boolean) {
@@ -53,11 +58,12 @@ function tool<const N extends string, E extends z.ZodObject, B extends z.ZodObje
 const creation = tool({
   name: 'create_account', description: 'open an account; initial state only',
   extractionSchema: z.object({ name: Name.describe('literal name'),
-    type: CreationType.default(AccountType.ASSET).describe('ASSET|LIABILITY (ASSET default)'),
-    currency: Currency.default('USD').describe(`${Currency.options.join('|')} (USD default)`),
-    balance: z.number().finite().default(0).describe('number (0 default)'),
-    credit_limit: z.number().finite().nonnegative().default(0).describe('number, default 0; omit if unknown'),
-    reward_currency: z.enum(REWARD_CURRENCY_IDS).nullable().default(null).describe('optional reward code') }).strict(),
+    type: CreationType.default(AccountType.ASSET).describe('LIABILITY for cards or owed money, else ASSET'),
+    currency: Currency.default('USD').describe('currency if stated (USD default)'),
+    balance: z.number().finite().default(0).describe('starting balance (0 default)'),
+    credit_limit: z.number().finite().nonnegative().default(0).describe('credit limit if stated (0 default)'),
+    reward_currency: z.enum(REWARD_CURRENCY_IDS).nullable().default(null).describe('reward program if stated') }).strict(),
+  plannerIntent: 'create', plannerFields: ['name', 'type', 'currency', 'balance', 'credit_limit'],
   inputSchema: z.object({ name: Name, type: CreationType, currency: Currency, balance: z.number().finite(),
     credit_limit: z.number().finite().nonnegative(), reward_currency: z.enum(REWARD_CURRENCY_IDS).nullable() }).strict(),
   outputSchema: ResultSchema.extend({ intent: z.literal('create_account'), entity: z.literal('account'), data: z.looseObject({ id: z.string().uuid(), name: Name, type: CreationType, currency: Currency, balance: z.number().finite() }) }),
@@ -77,9 +83,10 @@ const creation = tool({
 });
 const expense = tool({
   name: 'expense', description: 'record spending',
-  extractionSchema: z.object({ account: Name.describe('literal account name'), amount: Money.describe('positive number'),
-    currency: Currency.optional().describe('optional currency'), date: z.string().date().optional().describe('optional YYYY-MM-DD'),
-    memo: z.string().optional().describe('optional memo'), category: z.enum(EXPENSE_CATEGORIES).optional().describe(EXPENSE_CATEGORIES.join('|')) }).strict(),
+  extractionSchema: z.object({ account: Name.describe('literal account name'), amount: Money.describe('amount spent'),
+    currency: Currency.optional().describe('account currency if stated'), date: z.string().date().optional().describe('YYYY-MM-DD if stated'),
+    memo: z.string().optional().describe('note if stated'), category: z.enum(EXPENSE_CATEGORIES).optional().describe('spending category if clear') }).strict(),
+  plannerIntent: 'spend', plannerFields: ['account', 'amount', 'currency'],
   inputSchema: z.object({ accountId: Reference, expectedType: CreationType, expectedCurrency: Currency, amount: Money,
     category: z.enum(EXPENSE_CATEGORIES), memo: z.string().optional(), date: z.string().date() }).strict(),
   outputSchema: ResultSchema.extend({ intent: z.enum(['create_assets_expense', 'create_expense']), entity: z.literal('transaction'), data: z.looseObject({ expense_id: z.string().uuid(), reward_id: z.string().uuid().nullable(), reward_points: z.number().finite() }) }),
@@ -102,9 +109,10 @@ const expense = tool({
 });
 const transfer = tool({
   name: 'transfer', description: 'move money or repay a card',
-  extractionSchema: z.object({ from: Name.describe('literal source name'), to: Name.describe('literal destination name'), amount: z.union([Money, z.literal('all')]).describe('number|"all"'),
-    fromCurrency: Currency.optional().describe('optional source currency'), toCurrency: Currency.optional().describe('optional target currency'),
-    targetAmount: Money.optional().describe('optional received number (cross-currency required)'), memo: z.string().optional().describe('optional memo') }).strict(),
+  extractionSchema: z.object({ from: Name.describe('literal source name'), to: Name.describe('literal destination name'), amount: z.union([Money, z.literal('all')]).describe('amount sent, or "all"'),
+    fromCurrency: Currency.optional().describe('source currency if stated'), toCurrency: Currency.optional().describe('destination currency if stated'),
+    targetAmount: Money.optional().describe('amount received; required across currencies'), memo: z.string().optional().describe('note if stated') }).strict(),
+  plannerIntent: 'transfer', plannerFields: ['from', 'to', 'amount', 'fromCurrency', 'toCurrency', 'targetAmount'],
   inputSchema: z.object({ fromAccountId: Reference, toAccountId: Reference, amount: z.union([Money, z.literal('all')]), targetAmount: Money.optional(),
     fromCurrency: Currency, toCurrency: Currency, memo: z.string().optional() }).strict(),
   outputSchema: ResultSchema.extend({ intent: z.literal('create_transfer'), entity: z.literal('transaction'), data: z.object({ transaction: z.looseObject({ id: z.string().uuid(), amount: Money }) }) }),

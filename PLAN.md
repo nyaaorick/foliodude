@@ -496,4 +496,4 @@ described as unverified.
 - [ ] Recognition recovery remains unachieved; retain Experimental and unchanged 95%/90% gates.
 
 Module guide: `features/ai/README.md`. Evidence and solutions: `features/ai/docs/audit.md`.
-Historical AI integration checkpoints: `features/ai/docs/history.md`.
+Historical AI integration checkpoints remain in Git; maintained usage is in `features/ai/README.md`.

@@ -23,7 +23,7 @@ evaluation: for (const suite of ['regression', 'holdout'])
             break evaluation;
         }
     }
-batch.passed = batch.runs.length === 4 && batch.runs.every(x => x.acceptance?.passed);
+batch.passed = batch.runs.length === 4 && batch.runs.every(x => x.exitCode === 0 && x.acceptance?.passed);
 if (!batch.passed)
     process.exitCode = 1;
 const file = path.join(directory, `${stamp}-batch.json`);

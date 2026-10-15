@@ -1,4 +1,4 @@
-import { summarizeReport } from './report-utils.mjs';
+import { summarizeReport, evaluationPassed } from './report-utils.mjs';
 import { createServer } from 'vite';
 import { spawn } from 'node:child_process';
 import puppeteer from 'puppeteer-core';
@@ -30,7 +30,7 @@ const folder = value('--folder');
 const modelRoot = folder ? await realpath(path.resolve(folder)) : null;
 const artifacts = path.join(root, '.artifacts/ai'); await mkdir(artifacts, { recursive: true });
 const reportFile = path.join(artifacts, `${browserName}-${suite}-${mode}-${new Date().toISOString().replaceAll(':','-')}.json`);
-const sourceFiles = ['package-lock.json', 'features/ai/application/intent-draft-actions.ts', 'features/ai/application/intent-draft.ts', 'features/ai/protocol/mlp.ts', 'features/ai/protocol/action-registry.ts', 'features/ai/providers/text-client.ts', 'features/ai/runtime/local-runtime.ts', 'features/ai/config.ts', 'lib/db/migrations/001_init.sql', 'features/ai/eval/cases.ts', 'features/ai/eval/natural-cases.ts', 'features/ai/eval/expected-plans.ts', 'features/ai/eval/holdout-cases.ts', 'features/ai/eval/harness.ts', 'features/ai/eval/run.mjs', 'features/ai/eval/report-utils.mjs', 'features/ai/eval/fixtures/manifest.json', 'features/ai/application/ai-settings-actions.ts', 'features/ai/application/remote-settings.ts', 'lib/db/settings.ts', 'lib/db/session.ts', 'lib/db/ledger.ts', 'lib/sync/writer.ts', 'lib/actions/create-accounts-actions.ts', 'lib/actions/createAssetsExpense.ts', 'lib/actions/createTransaction.ts', 'lib/actions/createTransfer.ts', 'lib/types/accounts.ts', 'lib/utils/local-date.ts', 'lib/utils/financial-analytics.ts', 'lib/db/client.ts', 'lib/db/tx.ts', 'lib/db/sql.ts', 'lib/data/expense-categories.ts', 'lib/types/rewards.ts'];
+const sourceFiles = ['package-lock.json', 'features/ai/application/intent-draft-actions.ts', 'features/ai/application/intent-draft.ts', 'features/ai/protocol/mlp.ts', 'features/ai/protocol/output-format.ts', 'features/ai/protocol/action-registry.ts', 'features/ai/providers/text-client.ts', 'features/ai/runtime/local-runtime.ts', 'features/ai/config.ts', 'lib/db/migrations/001_init.sql', 'features/ai/eval/cases.ts', 'features/ai/eval/natural-cases.ts', 'features/ai/eval/expected-plans.ts', 'features/ai/eval/holdout-cases.ts', 'features/ai/eval/harness.ts', 'features/ai/eval/run.mjs', 'features/ai/eval/report-utils.mjs', 'features/ai/eval/fixtures/manifest.json', 'features/ai/application/ai-settings-actions.ts', 'features/ai/application/remote-settings.ts', 'lib/db/settings.ts', 'lib/db/session.ts', 'lib/db/ledger.ts', 'lib/sync/writer.ts', 'lib/actions/create-accounts-actions.ts', 'lib/actions/createAssetsExpense.ts', 'lib/actions/createTransaction.ts', 'lib/actions/createTransfer.ts', 'lib/types/accounts.ts', 'lib/utils/local-date.ts', 'lib/utils/financial-analytics.ts', 'lib/db/client.ts', 'lib/db/tx.ts', 'lib/db/sql.ts', 'lib/data/expense-categories.ts', 'lib/types/rewards.ts'];
 async function sourceHashes() {
   return Object.fromEntries(await Promise.all(sourceFiles.map(async file => [file, createHash('sha256').update(await readFile(path.join(root,file))).digest('hex')])));
 }
@@ -93,8 +93,10 @@ try {
     catch (error) { report.artifactErrors.push({ run: index + 1, stage: 'screenshot', error: String(error) }); }
   }
   if (JSON.stringify(report.sources) !== JSON.stringify(await sourceHashes())) throw Error('Source changed during evaluation; discard this run.');
+  // Label the output mode actually sent per call, not a declared constant.
+  report.outputModes = [...new Set(report.runs.flatMap(run => run.results.flatMap(x => x.measurements.responses.map(call => call.outputMode))))];
   Object.assign(report, summarizeReport(report));
-  if ((!diagnosticOnly && !report.acceptance.passed) || report.summary.failed || report.consoleErrors.length) process.exitCode = 1;
+  if (!evaluationPassed(report, diagnosticOnly)) process.exitCode = 1;
   console.log(JSON.stringify(report.summary));
 } catch (error) { report.fatal = error.stack || String(error); process.exitCode = 1; console.error(report.fatal); }
 finally { await flush(); console.log(`Report: ${reportFile}`); await browser?.close(); await server.close(); wakeGuard?.kill(); }

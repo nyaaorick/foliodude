@@ -7,7 +7,7 @@ import { getLocalRuntimeState, loadLocalModel, releaseLocalModel } from '@/featu
 import { MlpError, observeMlp, type MlpAction, type MlpMeasurement } from '@/features/ai/protocol/mlp';
 import { HARNESS_CASES } from '@/features/ai/eval/cases';
 import { holdoutCases } from '@/features/ai/eval/holdout-cases';
-import { expectedPlan, planMatches } from '@/features/ai/eval/expected-plans';
+import { expectedPlan, planOutcomeMatches } from '@/features/ai/eval/expected-plans';
 import { NATURAL_SEED } from '@/features/ai/eval/natural-cases';
 import { observeAiText, type AiTextMeasurement } from '@/features/ai/providers/text-client';
 
@@ -87,10 +87,7 @@ async function run(options: RunOptions) {
       }
       finally { stopMlp(); stopObserving(); clearTimeout(timeout); if (timer) clearTimeout(timer); if (prepared?.status === 'ready') discardIntentDraft(prepared.draft); }
       const expected = expectedPlan(fixture);
-      const planPassed = fixture.expected.outcome === 'clarification' ? prepared?.status === 'clarification'
-        : fixture.expected.outcome === 'no_action' ? prepared?.status === 'no_action'
-        : fixture.expected.outcome === 'cancel' ? abort.signal.aborted && abort.signal.reason?.name === 'AbortError'
-        : planMatches(extracted, expected);
+      const planPassed = planOutcomeMatches(fixture, prepared?.status, extracted, abort.signal);
       if (!planPassed && failureKind !== 'format') failureKind = 'semantic';
       const ms = performance.now() - start; const after = await snapshot();
       const unchanged = JSON.stringify(before) === JSON.stringify(after);

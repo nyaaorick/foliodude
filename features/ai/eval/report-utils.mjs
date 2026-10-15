@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 export const manifest = JSON.parse(await readFile(new URL('./fixtures/manifest.json', import.meta.url), 'utf8'));
-export const SCORING_VERSION = 1;
+export const SCORING_VERSION = 2;
 /** Grade complete ordered fixture coverage, never a successful subset. */
 export function summarizeReport(report) {
     const results = report.runs.flatMap(run => run.results);
@@ -26,10 +26,11 @@ export function summarizeReport(report) {
         threshold: report.suite === 'holdout' ? .90 : .95, accuracy: results.length ? summary.plansPassed / results.length : 0,
         coverageComplete, infrastructurePassed, configurationConsistent, criticalPassed: results.filter(x => manifest.criticalIds.includes(x.id)).every(x => x.planPassed),
         forbiddenDrafts: summary.forbiddenDrafts, preparationWrites: summary.preparationWrites,
+        saveCorrect: report.mode !== 'ledger' || results.filter(x => x.planPassed).every(x => x.ledgerPassed === true),
         repetitionRequirementMet: report.runs.length >= (report.suite === 'holdout' ? 1 : 3),
     };
-    acceptance.passed = coverageComplete && infrastructurePassed && configurationConsistent && acceptance.repetitionRequirementMet && acceptance.accuracy >= acceptance.threshold && acceptance.criticalPassed && !summary.forbiddenDrafts && !summary.preparationWrites;
-    return { scoringVersion: SCORING_VERSION, summary, acceptance };
+    acceptance.passed = coverageComplete && infrastructurePassed && configurationConsistent && acceptance.repetitionRequirementMet && acceptance.accuracy >= acceptance.threshold && acceptance.criticalPassed && acceptance.saveCorrect && !summary.forbiddenDrafts && !summary.preparationWrites;
+    return { scoringVersion: report.scoringVersion ?? SCORING_VERSION, acceptanceVersion: SCORING_VERSION, summary, acceptance };
 }
 export function assertSameEvaluation(a, b) {
     for (const key of ['browser', 'version', 'gpu', 'evaluationSeed', 'mode', 'suite', 'folder'])
@@ -67,4 +68,25 @@ export function retainRuns(report, indexes) {
     if (!clean.acceptance.coverageComplete)
         throw Error('Retained repetitions lack complete fixture coverage.');
     return clean;
+}
+
+/** Comparisons may change production sources, but never fixtures or scoring semantics. */
+export function assertComparableReports(before, after) {
+    assertSameEvaluation(before, after);
+    if (before.runs.length !== after.runs.length) throw Error('Repeat counts differ.');
+    for (const report of [before, after]) {
+        const grade = summarizeReport(report);
+        if (report.mode !== 'ledger' || !grade.acceptance.infrastructurePassed)
+            throw Error('Compare completed ledger runs without infrastructure failures.');
+    }
+    const fixtures = r => r.runs.flatMap(run => run.results).map(({ id, text, expected, expectedPlan }) => ({ id, text, expected, expectedPlan }));
+    if (JSON.stringify(fixtures(before)) !== JSON.stringify(fixtures(after))) throw Error('Fixture selection, order and expectations must match.');
+}
+
+/** Full runs honor accuracy gates; diagnostic subsets require every selected case. */
+export function evaluationPassed(report, diagnostic = false) {
+    const grade = summarizeReport(report);
+    return diagnostic
+        ? grade.acceptance.infrastructurePassed && grade.summary.cases > 0 && grade.summary.failed === 0
+        : grade.acceptance.passed;
 }
