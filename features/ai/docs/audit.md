@@ -42,6 +42,10 @@ warmup and excluded interrupted runs.
 
 ## What source inspection establishes
 
+The bullets below describe the frozen 0.1.3 baseline. The 0.1.4 native-JSON
+contract is in the [module README](../README.md#native-json-output-everything-webgpu-014),
+and its measured results are under "Native JSON Schema output" below.
+
 - [MLP](../protocol/mlp.ts) puts behavior in `instructions`, request/account context
   in `input`, exposes all three permitted registry actions, and performs one call.
   It strips only an empty leading think block or a whole JSON fence. It does not
@@ -99,7 +103,7 @@ warmup and excluded interrupted runs.
 | Lab intent/settings components and LLM-only credential form | `features/ai/ui/` |
 | Intent tests and LLM-specific endpoint assertions | `features/ai/tests/` |
 | `test/ai/*`, ignored UI/report helper logic | `features/ai/eval/` |
-| Root README AI-only guide and PLAN AI-only history | Module README and `docs/` |
+| Root README AI guide | Module README and failure audit; historical checkpoints remain in Git |
 
 `pages/lab.tsx` is assembly only. The shared API-key section delegates its LLM
 slot to the AI UI; FX/Finnhub form behavior stays shared. AI endpoint validation
@@ -115,7 +119,7 @@ validation were split from mixed files and verified in both targets.
 
 ## Repeatability fixes
 
-- Versioned all 476 baseline records, 46/100 fixture inventories, eight observed
+- Versioned all 476 baseline records, 46/100 fixture inventories, seven observed
   format outputs, UI runner, scoring, diagnosis, report retention/merge and batch
   drivers. Generated artifacts remain ignored.
 - Removed machine-specific `/@fs` paths and persistent UI ledgers. Every UI run
@@ -135,7 +139,7 @@ validation were split from mixed files and verified in both targets.
 |---|---|---|
 | P0 | Audit actual tokenizer, source chat template, rendered tokens, special stop IDs and effective WASM/context metadata; compare cold/reused identical requests | Rules out conversion/runtime faults; moderate inspection cost. Require recorded artifact hashes and golden token/render checks. Do not infer from filenames. |
 | P1 | Trial one consistent root envelope and remove conflicting root instructions; compile a minimal planner view from registry fields, retain full editor/business schemas | Targets 61 envelope and some field errors; low/moderate cost. Keep three actions and defaults; compare the same regression inputs with only this factor changed. |
-| P1 | Verify grammar/JSON-schema constrained decoding through a future supported Responses interface | Targets syntax/schema failures; requires dependency work because pinned 0.1.3 rejects it. No hidden raw-engine or Chat Completions bypass. Valid JSON alone must still pass semantic tests. |
+| Done | Grammar/JSON-schema constrained decoding through the supported Responses interface (everything-webgpu 0.1.4) | Implemented; see "Native JSON Schema output". Valid JSON alone did not pass semantic tests. |
 | P2 | Trial balanced generic examples for negation, initial debt, clarification and dependencies; test generation budget/stop settings separately | Targets semantic failures; low experiment cost but possible prompt growth/overfitting. Tune only development regressions; holdout remains untouched. |
 | P2 | Record effective prompt/output tokens and raw response completion status; compare equivalent compact versus full planner contexts | Tests context/output-budget hypothesis; moderate instrumentation cost. Preserve privacy of normal user telemetry and retain synthetic raw outputs only in explicit evaluation. |
 | P3 | Consider retrieval only when account counts/aliases exceed literal bounded context | Addresses missing context, not malformed JSON or reversed negation. No evidence that RAG explains these named-account fixtures; requires explicit ambiguity handling. |
@@ -155,3 +159,133 @@ three planning calls and zero preparation writes. It verifies loading/imports an
 the migrated plan/save path, not restored recognition accuracy. Full 476-case GPU
 evaluation was not repeated for import-only migration; its frozen failure evidence
 and gates remain unchanged. Full reruns are available through `ai:eval -- --full`.
+
+## Evaluator hardening and maintenance trim
+
+Scoring version 2 fixes three review findings: successful requests need validated
+ready drafts, correct plans must save correctly before ledger acceptance can pass,
+and comparisons must preserve scoring version and all expected plans. Batch success
+also requires zero runner exit codes. Historical version 1 results are preserved;
+they were not rerun or retroactively corrected. Shared comparison validation and one
+`ai:report` CLI replace separate report/diagnosis/comparison entry points. The module
+README is the maintained usage guide; historical checklists live in Git. Review-field
+controls are separated from page lifecycle and save state, without prompt changes.
+
+## Native JSON Schema output (everything-webgpu 0.1.4, 2026-10-15)
+
+Contract: see the [module README](../README.md#native-json-output-everything-webgpu-014).
+Same model (Qwen3.8-2B-q4f16_1-MLC), seed 20261012, Edge 155.0.4283.45 and Firefox
+157.0.1 on the same Apple M4. Browser versions match the frozen baseline. Reports
+are labeled `everything-webgpu 0.1.4, json_schema:strict` from the format each
+endpoint echoed. The baseline stays labeled 0.1.3 plain text.
+
+| Suite | 0.1.3 plans | 0.1.4 plans | Format | Semantic | DB | Forbidden / executable no-action | Prep writes | Calls | Planning p50 / p95 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| Edge regression ×3 | 28/138 | 30/138 | 73 → 9 | 37 → 99 | 0 | 3/0 → 15/0 | 0 | 138 | 5.3 s / 30.9 s |
+| Firefox regression ×3 | 35/138 | 33/138 | 67 → 9 | 36 → 96 | 0 | 3/0 → 15/0 | 0 | 138 | 11.4 s / 61.0 s |
+| Edge holdout | 46/100 | incomplete: 1/23 (0.1.3 same 23: 11/23) | 7 | 15 | 0 | 2/0 | 0 | 23 | — |
+| Firefox holdout | 44/100 | not measured | — | — | — | — | — | — | — |
+
+All gates fail; the feature remains Experimental. Both browsers fail the same 14 of
+20 critical cases in all three repetitions. Grammar plus temperature 0 makes the
+failures deterministic. All 9 regression format failures, and the 7 holdout ones,
+are `format/constraint-outside-decoder-subset`: well-formed JSON with a 0 amount,
+which the decoder cannot forbid. No invalid JSON, combined envelope or wrong root
+was emitted. Commit made no model calls. Every correct plan saved correctly.
+
+The syntax failures became semantic failures. The dominant new pattern is a leading
+`create_account` for an account that already exists (`action-order` Edge 30 / Firefox 33,
+`ungrounded-name` 18). Every regression negation/question/hypothetical/greeting
+case now proposes one; validation blocks all of them, so none is executable. Strict
+mode makes the model fill every optional field with a value rather than null. That
+includes an invented `reward_currency` (MR/RC), which exact-plan scoring does not
+cover, so some "passing" openings would save an unrequested reward currency.
+Single-run development A/B on Edge regression: strict 10/46 versus non-strict
+(optional fields omittable) 10/46. Even with omission allowed, the model still
+filled the fields. Strict was kept for its cross-provider guarantee.
+
+Holdout infrastructure: the batch Edge holdout lost its renderer frame after 23
+cases (`Attempted to use detached Frame`, no console errors). The two reruns then
+stalled in `Generating…`: Edge on case 1 and Firefox on case 2, each for the full
+60-minute budget. The harness's 90 s per-case abort did not end either generation,
+although 0.1.4 rejects an aborted foreground request immediately
+(`responses.js:232`), so the hang is below the request layer. (An earlier note that a
+3-case smoke also stalled was wrong: macOS has no `timeout` command, so it never ran.
+The next day the same smoke passed.) A later Edge regression run also detached at
+case 33; that case passed alone, and a full rerun completed. Treat this as an
+unresolved, intermittent environment fault: a GPU/renderer crash, with no crash dump
+written. Rerun both holdouts with `npm run harness:ai -- --browser edge|firefox
+--suite holdout --seed 20261012` after a browser/GPU reset.
+
+Next single-factor experiments, regression wording only:
+1. Put a no-action/clarification cue in semantic words, without JSON shapes.
+2. Change action branch order, or put the discriminator after the fields, to test
+   the `create_account` bias.
+3. Use non-strict locally with the same schema, to cut forced optional fields.
+4. Test whether cancellation reaches a stalled WebGPU decode.
+
+## Planner view and intent-first wire (single-factor, Edge regression ×1, 2026-10-15)
+
+Generation is deterministic (identical failures in all three repetitions above), so
+one repetition per step is used for attribution. Baseline is repetition 1 of the
+0.1.4 run above.
+
+| Step | Plans | Format | Opens / spends / transfers proposed (expected 21/9/10) | Wrong create of existing account | None / clarify correct | Forbidden / executable no-action | Invented reward | 8-step loops |
+|---|---:|---:|---|---:|---|---|---:|---:|
+| Baseline | 10/46 | 3 | 70 / 3 / 2 | 22 | 1/6, 0/4 | 5 / 0 | 39 | 4 |
+| C: registry `plannerFields` view | 12/46 | 10 | 56 / 7 / 4 | 14 | 1/6, 0/4 | 4 / 0 | 0 | 3 |
+| C+B: `intent` first, shape-enforcing branches | 18/46 | 0 | 82 / 2 / 6 | 17 | 0/6, 0/4 | 6 / **1** | 0 | 6 |
+
+- C removed every invented reward currency and reduced false creates. 9 of its 10
+  format failures are transfers with `targetAmount: 0`: strict mode forces a value,
+  and the decoder cannot express a positive number. They are not repaired.
+  `asset-expense` expects a memo, which is no longer extracted, so it cannot pass.
+- B made the grammar enforce plan shape: none has no steps, ask has only a question,
+  a single-action intent admits only that action, and multi needs two or more steps.
+  The package validator rejects every inconsistent shape. Accuracy rose through
+  opens (10/12), but the model never chose `none` or `ask`.
+  `natural-question` (a hypothetical "what if I move everything…? don't do it yet")
+  produced a valid transfer-all draft that saved in ledger mode, which is a hard gate
+  violation. `transfer-without-amount` also invented `"all"` and saved.
+- The no-executable-negative-draft hard gate and its stop rule were later dropped
+  (personal ledger; Review → Save, atomic rollback, stale checks and Zod validation
+  protect correctness). Such drafts remain plan failures and stay reported.
+
+### C+B+A: four semantic examples (Edge regression ×1)
+
+`compile()` gained four placeholder-name examples, one per line as "request →
+intent and parameters", with no JSON syntax or field spelling: transfer-all (EN),
+spend (ZH), none for a question (EN), ask for a missing amount (ZH). Instructions
+1914/2000 characters.
+
+| Step | Plans | Format | Opens / spends / transfers proposed (expected 21/9/10) | Wrong create of existing account | None / clarify correct | Forbidden / executable no-action | Over-long plans (8-step) | p50 planning ms |
+|---|---:|---:|---|---:|---|---|---:|---:|
+| C | 12/46 | 10 | 56 / 7 / 4 | 14 | 1/6, 0/4 | 4 / 0 | 13 (3) | 5757 |
+| C+B | 18/46 | 0 | 82 / 2 / 6 | 17 | 0/6, 0/4 | 6 / 1 | 19 (6) | 5236 |
+| C+B+A | 21/46 | 2 | 62 / 6 / 8 | 6 | 2/6, 0/4 | 3 / 0 | 12 (5) | 5765 |
+
+Per intent (C+B → C+B+A): open 10→7/12, transfer-all 1→4/7, debt 3→2/4, spend 1→2/4,
+none 0→2/6, reject 2→3/5; multi 0/2, clarify 0/4 and plain transfer 0/1 unchanged.
+Failure kinds: format 2 (both `targetAmount: 0`), semantic 23, validation 0, database 0.
+The examples cut false creates of existing accounts (17→6) and moved choices toward
+spend/transfer/none, at a cost of three openings. `ask` was still never chosen.
+
+### C+B+A full evaluation (2026-10-15)
+
+Complete repetitions only. The Firefox regression batch stalled in `Generating…` at
+repetition 2, case 23. Its complete repetition 1 was retained and merged with a full
+×2 rerun. The first Firefox holdout lost its frame after 51 cases and was rerun whole.
+
+| Browser / suite | Plans | Frozen 0.1.3 | First 0.1.4 | Format / semantic | Forbidden / executable no-action | p50 ms | Gate |
+|---|---:|---:|---:|---|---|---:|---|
+| Edge regression ×3 | 65/138 | 28/138 | 30/138 | 6 / 67 | 9 / 0 | 6050 | FAIL |
+| Firefox regression ×3 | 62/138 | 35/138 | 33/138 | 7 / 69 | 9 / 0 | 12201 | FAIL |
+| Edge holdout ×1 | 48/100 | 46/100 | none complete | 5 / 47 | 0 / 0 | 6426 | FAIL |
+| Firefox holdout ×1 | 50/100 | 44/100 | none complete | 4 / 46 | 0 / 0 | 12524 | FAIL |
+
+Preparation wrote 0 rows. Every case made exactly one planning call, and Save made
+none. 14 of the 20 critical cases failed in both browsers: natural-user-typo,
+natural-debt-en, natural-sequence, natural-question, natural-missing-target,
+natural-cross-currency, default-opening, opening-synonym, opening-inquiry,
+opening-hypothesis, expense-without-amount, transfer-without-amount, liability-account,
+create-and-spend. Status remains Experimental.

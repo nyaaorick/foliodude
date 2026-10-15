@@ -69,6 +69,11 @@ Execute only explicit requests or reported spending. Negation, questions, hypoth
 Copy exact names, casing, digits and spaces; exclude generic account/账户 suffixes. A category alone can be the account name.
 Opening defaults ASSET/USD/0. Credit cards, charge cards, owed money: LIABILITY with negative balance. Initial balance is not a transaction.
 Transfer amount "all" means remaining balance after prior steps. Do not guess money or unstated details. Missing amount/source/destination: ask. Cross-currency needs explicit targetAmount. Today ${today}.
+Examples (placeholder names):
+"Empty Acorn Jar into Maple Pouch" → transfer: Acorn Jar's whole remaining balance into Maple Pouch
+"枫叶钱包午饭花了12" → spend: 12 paid with 枫叶钱包
+"Should I move 30 out of Acorn Jar? Not yet" → none: only a question, nothing changes
+"从枫叶钱包转钱给橡果罐" → ask: 转多少？
 Actions:
 ${specs.join('\n')}`;
   if (instructions.length > MLP_LIMITS.instructionChars) throw Error('MLP instructions exceed the context budget. Split the request.');

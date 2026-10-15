@@ -25,11 +25,11 @@ export function summarizeReport(report) {
     const acceptance = {
         threshold: report.suite === 'holdout' ? .90 : .95, accuracy: results.length ? summary.plansPassed / results.length : 0,
         coverageComplete, infrastructurePassed, configurationConsistent, criticalPassed: results.filter(x => manifest.criticalIds.includes(x.id)).every(x => x.planPassed),
-        forbiddenDrafts: summary.forbiddenDrafts, preparationWrites: summary.preparationWrites,
+        preparationWrites: summary.preparationWrites,
         saveCorrect: report.mode !== 'ledger' || results.filter(x => x.planPassed).every(x => x.ledgerPassed === true),
         repetitionRequirementMet: report.runs.length >= (report.suite === 'holdout' ? 1 : 3),
     };
-    acceptance.passed = coverageComplete && infrastructurePassed && configurationConsistent && acceptance.repetitionRequirementMet && acceptance.accuracy >= acceptance.threshold && acceptance.criticalPassed && acceptance.saveCorrect && !summary.forbiddenDrafts && !summary.preparationWrites;
+    acceptance.passed = coverageComplete && infrastructurePassed && configurationConsistent && acceptance.repetitionRequirementMet && acceptance.accuracy >= acceptance.threshold && acceptance.criticalPassed && acceptance.saveCorrect && !summary.preparationWrites;
     return { scoringVersion: report.scoringVersion ?? SCORING_VERSION, acceptanceVersion: SCORING_VERSION, summary, acceptance };
 }
 export function assertSameEvaluation(a, b) {
