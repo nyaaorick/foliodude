@@ -148,23 +148,32 @@ internal Zod contract (`MlpActionSchema` from the registry's extraction schemas)
 with `z.toJSONSchema`. It maps Zod's discriminated `oneOf` to the equivalent
 `anyOf`. It drops only the keywords the decoder cannot express (`minLength`,
 `exclusiveMinimum`, date `format`/`pattern`, `default`), which Zod still enforces
-afterwards, and throws on any other keyword. Strict mode encodes optional fields as
+afterwards, and throws on any other keyword. It also drops `description` and `id`:
+field meanings travel in the instructions, which every backend reads, and the local
+decoder never shows the schema to the model. Each wire step schema carries an id, so
+it is emitted once under `$defs` and referenced from both its intent branch and
+`multi` (7523 → 3772 characters; on Groq 2489 → 1656 input tokens per request, of which
+582 are instructions and request). Strict mode encodes optional fields as
 required-nullable. Because a root union is unsupported, the internal
 `{steps} | {clarification}` union travels as `{"result": …}`. `result` starts with
 an `intent`: `create`, `spend` or `transfer` (from each tool's `plannerIntent`),
 `multi` (two or more steps of different kinds), `none` or `ask`. Each branch fixes the
 plan's shape; the grammar cannot express "different kinds", so `fromWire` rejects a
 same-kind `multi` as a format failure.
-The model fills only each tool's registry `plannerFields`: name/type/currency/
+The model fills only each tool's registry planner view: name/type/currency/
 balance/credit limit/reward currency, account/amount/currency/memo, and
-from/to/amount/currencies/`targetAmount`/memo. Strict mode makes the model fill these
+from/to/amount/currencies/`targetAmount`/memo. Transfer has two views told apart by
+action name: `transfer` (a positive amount) and `transfer_all` (no amount; `fromWire`
+restores `amount: "all"`). Groq's strict validator rejects a `number | "all"` field
+even for valid output, because it cannot disambiguate the union. Strict mode makes the model fill these
 optional fields, so a memo or reward currency is kept only when the request states it
 verbatim (a reward id needs a Latin word boundary, or its display name); otherwise it
 is dropped from the draft before review (`STATED_FIELDS`). Date and category are not
 extracted: a relative date or a guessed category cannot be grounded. They take their
 defaults and stay editable in review. `fromWire` in `protocol/mlp.ts` is the single place that
-unwraps the envelope, turns optional nulls back into omitted fields, and maps the
-intent back to the internal union. Draft types and business semantics are unchanged. The grammar
+unwraps the envelope, turns optional nulls back into omitted fields, maps each view
+back to its action with the view's fixed fields, and maps the intent back to the
+internal union. Draft types and business semantics are unchanged. The grammar
 makes the previously observed "both steps and clarification", wrong-root and
 prose-outside-JSON categories impossible to emit locally. A remote provider gives
 that guarantee only if it honors strict `json_schema`.

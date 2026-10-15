@@ -5,14 +5,16 @@ export type JsonSchemaFormat = OpenAI.Responses.ResponseFormatTextJSONSchemaConf
 type Node = Record<string, unknown>;
 
 // Accepted by everything-webgpu 0.1.4 (src/engine/structured-output.js) and by strict Responses providers.
-const DECODABLE = new Set(['type', 'properties', 'required', 'additionalProperties', 'items', 'minItems', 'maxItems', 'enum', 'const', 'anyOf', 'description']);
+const DECODABLE = new Set(['type', 'properties', 'required', 'additionalProperties', 'items', 'minItems', 'maxItems', 'enum', 'const', 'anyOf', '$ref']);
+// Metadata, not constraints. Field meanings travel in the instructions, which every backend reads; the local decoder never
+// shows the schema to the model. `id` names a $defs entry.
+const PROMPT_ONLY = new Set(['description', 'id']);
 // Not expressible by the decoder. Zod still enforces each one after decoding.
 const VALIDATED_AFTER = new Set(['$schema', 'default', 'minLength', 'maxLength', 'minimum', 'exclusiveMinimum', 'maximum', 'format', 'pattern']);
 const allowsNull = (node: Node): boolean => node.type === 'null' || (Array.isArray(node.anyOf) && node.anyOf.some(branch => allowsNull(branch as Node)));
 const nullable = (node: Node): Node => {
   if (allowsNull(node)) return node;
-  const { description, ...value } = node;
-  return { anyOf: [...(Array.isArray(value.anyOf) && Object.keys(value).length === 1 ? value.anyOf as Node[] : [value]), { type: 'null' }], ...(description === undefined ? {} : { description }) };
+  return { anyOf: [...(Array.isArray(node.anyOf) && Object.keys(node).length === 1 ? node.anyOf as Node[] : [node]), { type: 'null' }] };
 };
 
 function narrow(node: Node, path: string): Node {
@@ -22,8 +24,9 @@ function narrow(node: Node, path: string): Node {
     if (key === 'oneOf' || key === 'anyOf') out.anyOf = (value as Node[]).map((branch, index) => narrow(branch, `${path}/${key}/${index}`));
     else if (key === 'properties') out.properties = Object.fromEntries(Object.entries(value as Record<string, Node>).map(([name, child]) => [name, narrow(child, `${path}/properties/${name}`)]));
     else if (key === 'items') out.items = narrow(value as Node, `${path}/items`);
+    else if (key === '$defs') out.$defs = Object.fromEntries(Object.entries(value as Record<string, Node>).map(([name, child]) => [name, narrow(child, `${path}/$defs/${name}`)]));
     else if (DECODABLE.has(key)) out[key] = value;
-    else if (!VALIDATED_AFTER.has(key)) throw Error(`The local JSON decoder cannot express ${key} at ${path}.`);
+    else if (!VALIDATED_AFTER.has(key) && !PROMPT_ONLY.has(key)) throw Error(`The local JSON decoder cannot express ${key} at ${path}.`);
   }
   // Strict decoding requires every property; optional values are represented as null and removed by withoutOptionalNulls.
   if (out.type === 'object') {
@@ -36,6 +39,7 @@ function narrow(node: Node, path: string): Node {
 
 /** Derive the shared Responses text.format from the internal Zod contract. */
 export function jsonSchemaFormat(name: string, schema: z.ZodType): JsonSchemaFormat {
+  // Schemas given an id (meta) are emitted once under $defs and referenced; everything else stays inline.
   return { type: 'json_schema', name, strict: true, schema: narrow(z.toJSONSchema(schema, { io: 'input', unrepresentable: 'throw' }) as Node, '#') };
 }
 

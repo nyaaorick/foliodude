@@ -308,3 +308,33 @@ Newly passing: asset-expense (memo), natural-all-en-3, natural-all-zh-2,
 natural-question; none regressed. `liability-account` emitted the example placeholder
 "Acorn Jar" (rejected by grounding): the examples leak into outputs. Not yet
 measured ×3 or on holdout.
+
+### Remote comparison: Groq gpt-oss-120b on the same pipeline (Edge regression ×1)
+
+`run.mjs --remote` runs the unchanged Responses pipeline against the endpoint in the
+gitignored `config.json`, pacing cases to the provider's token limit and ending a
+repetition on a 429. Groq validates strict `json_schema` after generation and rejects
+a `number | "all"` field even for valid output (it cannot disambiguate the union), so
+transfer was split into `transfer` and `transfer_all` planner views. A Groq
+`json_validate_failed` 400 is now a `format` failure carrying `failed_generation`.
+
+| Run (same commit) | Plans | Format | transfer-all | multi | none / clarify | False creates | p50 ms |
+|---|---:|---:|---|---|---|---:|---:|
+| Local, before split | 25/46 | 1 | 6/7 | 0/2 | 3/6, 0/4 | 5 | 6567 |
+| Local, split | 18/46 | 10 | 0/7 | 0/2 | 2/6, 0/4 | 4 | 3644 |
+| Remote, split | 40/46 | 0 | 7/7 | 2/2 | 4/6, 4/4 | 0 | 1875 |
+
+The pipeline is not the main limit: the remote model passes 87% with the same prompt,
+schema and checks. The split costs the local model 7 cases: it chose `transfer` with
+`amount: 0` (which the decoder cannot exclude) instead of `transfer_all`. Remote
+failures: default-opening (amex as LIABILITY), opening-inquiry (asked instead of
+none), opening-hypothesis, opening-duplicate, missing-account (asked instead of a
+rejected draft), after-cancel (kept the name suffix).
+
+### Schema dedup
+
+Step schemas are emitted once under `$defs` and referenced; `description`/`id` are
+dropped from the wire (meanings are in the instructions). Schema 7523 → 3772
+characters. Groq, same request: 2489 → 1656 input tokens (instructions and request
+alone: 582), identical output. Local Edge regression ×1: 18 → 18 plans, 44/46
+byte-identical outputs (the other two fail either way), p50 3644 → 3654 ms.

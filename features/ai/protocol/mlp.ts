@@ -26,7 +26,9 @@ type Tool = (typeof ACTION_REGISTRY)[MlpActionName];
 type PlannerStep = { action: string } & Record<string, unknown>;
 const TOOLS = Object.values(ACTION_REGISTRY);
 const VIEWS = TOOLS.flatMap(tool => tool.plannerViews.map(view => ({ ...view, tool })));
-const viewSteps = (views: typeof VIEWS) => views.map(view => z.object({ action: z.literal(view.name) }).extend(view.schema.shape).strict());
+// One schema instance per view: the single-action branch and multi reference the same step, so it is emitted once ($defs).
+const STEPS = new Map(VIEWS.map(view => [view, z.object({ action: z.literal(view.name) }).extend(view.schema.shape).strict().meta({ id: `${view.name}_step` })]));
+const viewSteps = (views: typeof VIEWS) => views.map(view => STEPS.get(view)!);
 const toolSteps = (tool: Tool) => { const [first, ...rest] = viewSteps(VIEWS.filter(view => view.tool === tool)); return rest.length ? z.discriminatedUnion('action', [first, ...rest]) : first; };
 const steps = (item: z.ZodType, min: number) => z.array(item).min(min).max(MLP_LIMITS.steps);
 // The intent comes first, so the model classifies the whole request before filling any fields. Each branch fixes
