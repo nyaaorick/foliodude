@@ -20,7 +20,9 @@ function wire(value: unknown) {
   if (plan.clarification !== undefined) return { intent: 'ask', ...plan };
   if (!Array.isArray(plan.steps)) return value;
   if (!plan.steps.length) return { intent: 'none' };
-  return { intent: new Set(plan.steps.map(step => step.action)).size > 1 ? 'multi' : INTENTS[plan.steps[0].action], ...plan };
+  // A transfer of "all" travels as its own transfer_all view, without an amount.
+  const steps = plan.steps.map(step => step.action === 'transfer' && (step as { amount?: unknown }).amount === 'all' ? { ...step, action: 'transfer_all', amount: undefined } : step);
+  return { intent: new Set(plan.steps.map(step => step.action)).size > 1 ? 'multi' : INTENTS[plan.steps[0].action], ...plan, steps };
 }
 const response = (value: unknown, extra: object = { text: { format: MLP_OUTPUT_FORMAT } }) => ({ id: 'resp_test', object: 'response', status: 'completed', output: [{ type: 'message', id: 'msg_test', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: JSON.stringify({ result: wire(value) }), annotations: [] }] }], ...extra });
 function mockPlan(value: unknown, extra?: object) {

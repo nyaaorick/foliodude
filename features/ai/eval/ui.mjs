@@ -15,7 +15,8 @@ let current = { steps: [] }, ignoresFormat = false;
 // Fixed outputs are written as internal plans and sent in the intent-tagged wire form.
 const INTENTS = { create_account: 'create', expense: 'spend', transfer: 'transfer' };
 const wire = plan => plan.clarification !== undefined ? { intent: 'ask', ...plan } : !plan.steps.length ? { intent: 'none' }
-    : { intent: new Set(plan.steps.map(step => step.action)).size > 1 ? 'multi' : INTENTS[plan.steps[0].action], ...plan };
+    : { intent: new Set(plan.steps.map(step => step.action)).size > 1 ? 'multi' : INTENTS[plan.steps[0].action], ...plan,
+        steps: plan.steps.map(({ amount, ...step }) => step.action === 'transfer' && amount === 'all' ? { ...step, action: 'transfer_all' } : { ...step, ...(amount === undefined ? {} : { amount }) }) };
 let page;
 report.errors = [];
 try {

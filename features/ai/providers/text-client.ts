@@ -49,6 +49,10 @@ async function generateResponse(client: OpenAI, model: string, instructions: str
     if (refusal) throw new Error(`The AI declined the request: ${refusal.refusal}`);
     return output;
   } catch (cause) {
+    // A provider that validates after generating returns the rejected output: that is the model's format failure.
+    if (cause instanceof Error && 'error' in cause && (cause.error as { code?: string } | undefined)?.code === 'json_validate_failed') {
+      throw new AiOutputError(cause.message, String((cause.error as { failed_generation?: unknown }).failed_generation ?? ''));
+    }
     // Only a rejection that names the output format is a missing capability; other 400s keep their own message.
     if (cause instanceof Error && 'status' in cause && cause.status === 400 && /text\.format|json_schema|response_format|schema/i.test(`${'param' in cause ? cause.param : ''} ${cause.message}`)) {
       throw new Error(`The AI endpoint rejected native ${format.type} output: ${cause.message}. It is unsupported for planning; no fallback is attempted.`, { cause });

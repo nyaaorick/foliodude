@@ -36,14 +36,20 @@ interface ToolSpec<N extends string, E extends z.ZodObject, B extends z.ZodObjec
   /** The request-level intent label for plans made only of this action. */
   plannerIntent: string;
   /** The fields the model extracts. The rest take their defaults and stay editable in review. */
-  plannerFields: readonly (keyof E['shape'] & string)[];
+  plannerFields?: readonly (keyof E['shape'] & string)[];
+  /** Instead of plannerFields: several wire views, each told apart by its own action name. A view fixes fields the model
+   *  must not fill, so no field needs a union a strict provider cannot disambiguate (e.g. number | "all"). */
+  plannerViews?: readonly PlannerView[];
   availability(accounts: MlpAccount[], earlierCreation: boolean): string | null;
   normalize(value: z.infer<E>, context: MappingContext): z.infer<B>;
   execute(value: z.infer<B>, context: ExecutionContext): Promise<MlpActionResult>;
 }
+export interface PlannerView { name: string; description: string; fields: Record<string, z.ZodType>; fixed: Record<string, unknown> }
+const pick = (shape: Record<string, z.ZodType>, keys: readonly string[]) => Object.fromEntries(keys.map(key => [key, shape[key]]));
 function tool<const N extends string, E extends z.ZodObject, B extends z.ZodObject>(spec: ToolSpec<N, E, B>) {
+  const views = spec.plannerViews ?? [{ name: spec.name, description: spec.description, fields: pick(spec.extractionSchema.shape, spec.plannerFields!), fixed: {} }];
   return Object.freeze({ ...spec,
-    plannerSchema: z.object(Object.fromEntries(spec.plannerFields.map(key => [key, spec.extractionSchema.shape[key] as z.ZodType]))).strict(),
+    plannerViews: views.map(view => Object.freeze({ ...view, schema: z.object(view.fields).strict() })),
     annotations: Object.freeze({ readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false }),
     risk: 'ledger-write' as const, undoSupported: false,
     availability(accounts: MlpAccount[], earlierCreation: boolean) {
@@ -107,12 +113,17 @@ const expense = tool({
     return { intent: asset ? 'create_assets_expense' : 'create_expense', entity: 'transaction', entityId: data.expense_id, data: { ...data } };
   },
 });
+const transferExtraction = z.object({ from: Name.describe('literal source name'), to: Name.describe('literal destination name'), amount: z.union([Money, z.literal('all')]).describe('amount sent, or "all"'),
+  fromCurrency: Currency.optional().describe('source currency if stated'), toCurrency: Currency.optional().describe('destination currency if stated'),
+  targetAmount: Money.optional().describe('amount received; required across currencies'), memo: z.string().optional().describe('note if stated') }).strict();
+const transferRest = pick(transferExtraction.shape, ['fromCurrency', 'toCurrency', 'targetAmount', 'memo']);
 const transfer = tool({
   name: 'transfer', description: 'move money or repay a card',
-  extractionSchema: z.object({ from: Name.describe('literal source name'), to: Name.describe('literal destination name'), amount: z.union([Money, z.literal('all')]).describe('amount sent, or "all"'),
-    fromCurrency: Currency.optional().describe('source currency if stated'), toCurrency: Currency.optional().describe('destination currency if stated'),
-    targetAmount: Money.optional().describe('amount received; required across currencies'), memo: z.string().optional().describe('note if stated') }).strict(),
-  plannerIntent: 'transfer', plannerFields: ['from', 'to', 'amount', 'fromCurrency', 'toCurrency', 'targetAmount', 'memo'],
+  extractionSchema: transferExtraction,
+  plannerIntent: 'transfer', plannerViews: [
+    { name: 'transfer', description: 'move an amount or repay a card', fields: { ...pick(transferExtraction.shape, ['from', 'to']), amount: Money.describe('amount sent'), ...transferRest }, fixed: {} },
+    { name: 'transfer_all', description: 'move all money left after prior steps', fields: { ...pick(transferExtraction.shape, ['from', 'to']), ...transferRest }, fixed: { amount: 'all' } },
+  ],
   inputSchema: z.object({ fromAccountId: Reference, toAccountId: Reference, amount: z.union([Money, z.literal('all')]), targetAmount: Money.optional(),
     fromCurrency: Currency, toCurrency: Currency, memo: z.string().optional() }).strict(),
   outputSchema: ResultSchema.extend({ intent: z.literal('create_transfer'), entity: z.literal('transaction'), data: z.object({ transaction: z.looseObject({ id: z.string().uuid(), amount: Money }) }) }),

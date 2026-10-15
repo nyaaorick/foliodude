@@ -12,7 +12,8 @@ const root = fileURLToPath(new URL('../../..', import.meta.url));
 const args = process.argv.slice(2);
 const value = (name, fallback) => { const index = args.indexOf(name); return index < 0 ? fallback : args[index + 1]; };
 if (args.includes('--help')) {
-  console.log('npm run harness:ai -- [--browser edge|chrome|firefox] [--folder /path/to/compiled-model] [--mode ledger|extraction] [--cases comma,separated,ids] [--repeat 1] [--seed 20261011] [--suite regression|holdout]');
+  console.log('npm run harness:ai -- [--browser edge|chrome|firefox] [--folder /path/to/compiled-model] [--mode ledger|extraction] [--cases comma,separated,ids] [--repeat 1] [--seed 20261011] [--suite regression|holdout] [--remote]');
+  console.log('--remote: the Responses endpoint in the gitignored config.json ({"remote":{"baseUrl","model","apiKey","tokensPerMinute"}}), paced to its token limit.');
   console.log('Uses a managed test profile and isolated synthetic ledger on 127.0.0.1:4175. Default source: direct Hugging Face URL. Set FOLIO_AI_BROWSER_PATH for other installed browser locations.');
   process.exit(0);
 }
@@ -27,16 +28,19 @@ const defaults = { edge: '/Applications/Microsoft Edge.app/Contents/MacOS/Micros
 const executablePath = process.env.FOLIO_AI_BROWSER_PATH || defaults[browserName];
 await stat(executablePath);
 const folder = value('--folder');
+// --remote runs the same pipeline against the Responses endpoint in the gitignored config.json; the key never enters the report.
+const remote = args.includes('--remote') ? JSON.parse(await readFile(path.join(root, 'config.json'), 'utf8')).remote : null;
+if (remote && folder) throw Error('Choose --remote or --folder, not both.');
 const modelRoot = folder ? await realpath(path.resolve(folder)) : null;
 const artifacts = path.join(root, '.artifacts/ai'); await mkdir(artifacts, { recursive: true });
-const reportFile = path.join(artifacts, `${browserName}-${suite}-${mode}-${new Date().toISOString().replaceAll(':','-')}.json`);
+const reportFile = path.join(artifacts, `${browserName}-${suite}-${mode}${remote ? '-remote' : ''}-${new Date().toISOString().replaceAll(':','-')}.json`);
 const sourceFiles = ['package-lock.json', 'features/ai/application/intent-draft-actions.ts', 'features/ai/application/intent-draft.ts', 'features/ai/protocol/mlp.ts', 'features/ai/protocol/output-format.ts', 'features/ai/protocol/action-registry.ts', 'features/ai/providers/text-client.ts', 'features/ai/runtime/local-runtime.ts', 'features/ai/config.ts', 'lib/db/migrations/001_init.sql', 'features/ai/eval/cases.ts', 'features/ai/eval/natural-cases.ts', 'features/ai/eval/expected-plans.ts', 'features/ai/eval/holdout-cases.ts', 'features/ai/eval/harness.ts', 'features/ai/eval/run.mjs', 'features/ai/eval/report-utils.mjs', 'features/ai/eval/fixtures/manifest.json', 'features/ai/application/ai-settings-actions.ts', 'features/ai/application/remote-settings.ts', 'lib/db/settings.ts', 'lib/db/session.ts', 'lib/db/ledger.ts', 'lib/sync/writer.ts', 'lib/actions/create-accounts-actions.ts', 'lib/actions/createAssetsExpense.ts', 'lib/actions/createTransaction.ts', 'lib/actions/createTransfer.ts', 'lib/types/accounts.ts', 'lib/utils/local-date.ts', 'lib/utils/financial-analytics.ts', 'lib/db/client.ts', 'lib/db/tx.ts', 'lib/db/sql.ts', 'lib/data/expense-categories.ts', 'lib/types/rewards.ts'];
 async function sourceHashes() {
   return Object.fromEntries(await Promise.all(sourceFiles.map(async file => [file, createHash('sha256').update(await readFile(path.join(root,file))).digest('hex')])));
 }
 const packageVersions = Object.fromEntries(await Promise.all(['everything-webgpu','openai'].map(async name => [name, JSON.parse(await readFile(path.join(root,'node_modules',name,'package.json'),'utf8')).version])));
 const diagnosticOnly = args.includes('--cases');
-const report = { diagnosticOnly, packageVersions, requestParameters: { temperature: 0, max_output_tokens: 2048, store: false }, evaluationSeed, browser: browserName, executablePath, mode, suite, folder: modelRoot, runs: [], consoleErrors: [], artifactErrors: [], sources: await sourceHashes() };
+const report = { diagnosticOnly, packageVersions, requestParameters: { temperature: 0, max_output_tokens: 2048, store: false }, evaluationSeed, browser: browserName, executablePath, mode, suite, folder: modelRoot, remote: remote && { baseUrl: remote.baseUrl, model: remote.model }, runs: [], consoleErrors: [], artifactErrors: [], sources: await sourceHashes() };
 const flush = () => writeFile(reportFile, JSON.stringify(report, null, 2));
 const server = await createServer({ configFile: false, root: path.join(root, 'features/ai/eval'),
   resolve: { alias: { '@': root } }, server: { host: '127.0.0.1', port: 4175, strictPort: true, fs: { allow: [root] } },
@@ -76,7 +80,7 @@ try {
   for (let index = 0; index < repeat; index++) {
     if (index) { await page.reload(); await page.waitForFunction(() => !!window.folioHarness); }
     const selected = value('--cases')?.split(',');
-    await page.evaluate(options => { void window.folioHarness.run(options); }, { folder: !!modelRoot, mode, suite, cases: selected });
+    await page.evaluate(options => { void window.folioHarness.run(options); }, { folder: !!modelRoot, mode, suite, cases: selected, remote: remote && { baseUrl: remote.baseUrl, model: remote.model, apiKey: remote.apiKey, tokensPerMinute: remote.tokensPerMinute ?? 8000 } });
     const deadline = Date.now() + (suite === 'holdout' ? 60 : 30) * 60_000; let previous;
     while (true) {
       const current = await page.evaluate(() => ({ ...window.folioHarness.state, runtime: window.folioHarness.runtime() }));

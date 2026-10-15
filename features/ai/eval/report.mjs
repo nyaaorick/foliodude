@@ -70,7 +70,7 @@ async function manage(args) {
 const runtimeLabel = r => {
     if (!r.packageVersions) return 'everything-webgpu 0.1.3 (frozen), text (unconstrained)';
     const modes = new Set(r.runs.flatMap(run => run.results.flatMap(x => x.measurements.responses.filter(call => call.status !== null).map(call => call.outputMode))));
-    return `everything-webgpu ${r.packageVersions['everything-webgpu']}, ${[...modes].join('+') || 'output mode unrecorded'}`;
+    return `${r.remote ? `remote ${r.remote.model}` : `everything-webgpu ${r.packageVersions['everything-webgpu']}`}, ${[...modes].join('+') || 'output mode unrecorded'}`;
 };
 async function diagnose(files) {
     const reports = files.length ? await Promise.all(files.map(async (f) => JSON.parse(await readFile(f, 'utf8'))))

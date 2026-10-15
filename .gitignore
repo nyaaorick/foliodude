@@ -30,3 +30,6 @@ yarn-error.log*
 
 # isolated AI harness reports and browser profiles
 /.artifacts/
+
+# local secrets (remote AI eval)
+/config.json

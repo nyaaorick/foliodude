@@ -21,31 +21,36 @@ const actionSchema = <T extends (typeof ACTION_REGISTRY)[MlpActionName]>(tool: T
 export const MlpActionSchema = z.discriminatedUnion('action', [
   actionSchema(ACTION_REGISTRY.create_account), actionSchema(ACTION_REGISTRY.expense), actionSchema(ACTION_REGISTRY.transfer),
 ]);
-// The model fills only the registry's planner fields; the full action schema validates drafts and edits.
-const plannerStep = (tool: (typeof ACTION_REGISTRY)[MlpActionName]) => z.object({ action: z.literal(tool.name) }).extend(tool.plannerSchema.shape).strict();
-type PlannerStep = z.infer<ReturnType<typeof plannerStep>>;
+// The model fills only the registry's planner views; the full action schema validates drafts and edits.
+type Tool = (typeof ACTION_REGISTRY)[MlpActionName];
+type PlannerStep = { action: string } & Record<string, unknown>;
 const TOOLS = Object.values(ACTION_REGISTRY);
+const VIEWS = TOOLS.flatMap(tool => tool.plannerViews.map(view => ({ ...view, tool })));
+const viewSteps = (views: typeof VIEWS) => views.map(view => z.object({ action: z.literal(view.name) }).extend(view.schema.shape).strict());
+const toolSteps = (tool: Tool) => { const [first, ...rest] = viewSteps(VIEWS.filter(view => view.tool === tool)); return rest.length ? z.discriminatedUnion('action', [first, ...rest]) : first; };
 const steps = (item: z.ZodType, min: number) => z.array(item).min(min).max(MLP_LIMITS.steps);
 // The intent comes first, so the model classifies the whole request before filling any fields. Each branch fixes
 // the plan's shape: none has no steps, ask has only a question, a single-action intent admits only that action.
 const MlpWireSchema = z.object({ result: z.discriminatedUnion('intent', [
   z.object({ intent: z.literal('none') }).strict(),
   z.object({ intent: z.literal('ask'), clarification: z.string().trim().min(1) }).strict(),
-  ...TOOLS.map(tool => z.object({ intent: z.literal(tool.plannerIntent), steps: steps(plannerStep(tool), 1) }).strict()),
-  z.object({ intent: z.literal('multi'), steps: steps(z.discriminatedUnion('action', TOOLS.map(plannerStep) as [ReturnType<typeof plannerStep>]), 2) }).strict(),
+  ...TOOLS.map(tool => z.object({ intent: z.literal(tool.plannerIntent), steps: steps(toolSteps(tool), 1) }).strict()),
+  z.object({ intent: z.literal('multi'), steps: steps(z.discriminatedUnion('action', viewSteps(VIEWS) as [z.ZodObject, ...z.ZodObject[]]), 2) }).strict(),
 ] as [z.ZodObject, ...z.ZodObject[]]) }).strict();
 export const MLP_OUTPUT_FORMAT = jsonSchemaFormat('ledger_plan', MlpWireSchema);
 type MlpOutput = { steps: PlannerStep[] } | { clarification: string };
-/** The only wire-to-internal conversion: drop strict-mode nulls for optional fields, then map the intent back to the internal union. */
+/** The only wire-to-internal conversion: drop strict-mode nulls for optional fields, map each view back to its action with
+ *  the view's fixed fields, and map the intent back to the internal union. */
 function fromWire(raw: string): MlpOutput {
   let value: unknown;
   try { value = JSON.parse(raw); }
   catch { throw Error(`Invalid AI plan JSON: ${raw}`); }
   const wire = (value as { result?: { steps?: unknown } } | null)?.result;
   if (Array.isArray(wire?.steps)) wire.steps = wire.steps.map(step => withoutOptionalNulls(step,
-    TOOLS.find(tool => tool.name === (step as { action?: unknown })?.action)?.plannerSchema.shape ?? {}));
+    VIEWS.find(view => view.name === (step as { action?: unknown })?.action)?.schema.shape ?? {}));
   const result = MlpWireSchema.parse(value).result as { intent: string; clarification?: string; steps?: PlannerStep[] };
   if (result.intent === 'ask') return { clarification: result.clarification! };
+  result.steps = result.steps?.map(({ action, ...fields }) => { const view = VIEWS.find(item => item.name === action)!; return { action: view.tool.name, ...fields, ...view.fixed }; });
   // The grammar cannot express "different kinds"; same-kind steps belong to that action's own intent.
   if (result.intent === 'multi' && new Set(result.steps!.map(step => step.action)).size < 2) throw Error(`Intent multi needs steps of different kinds; got only ${result.steps![0].action}.`);
   return { steps: result.steps ?? [] };
@@ -63,18 +68,25 @@ function context(text: string, accounts: MlpAccount[]) {
   return { candidates, tools };
 }
 function compile(request: ReturnType<typeof context>, today: string) {
-  const specs = request.tools.map(tool => `${tool.name}: ${tool.description}; ${Object.entries(tool.plannerSchema.shape).map(([key, schema]) => `${key}: ${schema.description}`).join('; ')}`);
+  const fields = (shape: Record<string, z.ZodType>, keys: string[]) => keys.map(key => `${key}: ${shape[key].description}`).join('; ');
+  // Later views of an action are described against its first view, so shared fields are listed once.
+  const specs = request.tools.flatMap(tool => tool.plannerViews.map((view, index) => {
+    const first = tool.plannerViews[0].schema.shape, shape = view.schema.shape as Record<string, z.ZodType>;
+    if (!index) return `${view.name}: ${view.description}; ${fields(shape, Object.keys(shape))}`;
+    const added = Object.keys(shape).filter(key => !(key in first)), removed = Object.keys(first).filter(key => !(key in shape));
+    return `${view.name}: ${view.description}; as ${tool.plannerViews[0].name}${removed.length ? `, without ${removed.join(', ')}` : ''}${added.length ? `; ${fields(shape, added)}` : ''}`;
+  }));
   // Output syntax is enforced by MLP_OUTPUT_FORMAT; instructions carry only ledger semantics.
-  const intents = request.tools.map(tool => `${tool.plannerIntent} (only ${tool.name} steps)`).join(', ');
+  const intents = request.tools.map(tool => `${tool.plannerIntent} (only ${tool.plannerViews.map(view => view.name).join('/')} steps)`).join(', ');
   const instructions = `Extract Chinese/English ledger actions. First classify the whole request: ${intents}, multi (several different kinds of steps), none (nothing should change), ask (required information is missing; ask one short question).
 Execute only explicit requests or reported spending. Negation, questions, hypotheticals, greetings: none. Include ALL steps in order; resolve pronouns. Never create an existing account to spend/transfer.
 Copy exact names, casing, digits and spaces; exclude generic account/账户 suffixes. A category alone can be the account name.
 Opening defaults ASSET/USD/0. Credit cards, charge cards, owed money: LIABILITY with negative balance. Initial balance is not a transaction.
-Transfer amount "all" means remaining balance after prior steps. Do not guess money or unstated details. Missing amount/source/destination: ask. Cross-currency needs explicit targetAmount. Today ${today}.
+Do not guess money or unstated details. Missing amount/source/destination: ask. Cross-currency needs explicit targetAmount. Today ${today}.
 Examples:
-"Empty Acorn Jar into Maple Pouch" → transfer: Acorn Jar's whole remaining balance into Maple Pouch
+"Empty Acorn Jar into Maple Pouch" → transfer_all: Acorn Jar's remaining balance into Maple Pouch
 "枫叶钱包午饭花了12" → spend: 12 paid with 枫叶钱包
-"Should I move 30 out of Acorn Jar? Not yet" → none: only a question, nothing changes
+"Should I move 30 out of Acorn Jar? Not yet" → none: a question, nothing changes
 "从枫叶钱包转钱给橡果罐" → ask: 转多少？
 Actions:
 ${specs.join('\n')}`;

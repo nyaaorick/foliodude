@@ -2,6 +2,7 @@ import { getDb } from '@/lib/db/client';
 import { createAccount } from '@/lib/actions/create-accounts-actions';
 import { prepareIntentDraft, commitIntentDraft, discardIntentDraft, type PrepareIntentResult } from '@/features/ai/application/intent-draft-actions';
 import { saveAiSettings } from '@/features/ai/application/ai-settings-actions';
+import { saveApiKey } from '@/lib/actions/api-key-actions';
 import { DEFAULT_LOCAL_MODEL, type LocalModelConfig } from '@/features/ai/config';
 import { getLocalRuntimeState, loadLocalModel, releaseLocalModel } from '@/features/ai/runtime/local-runtime';
 import { MlpError, observeMlp, type MlpAction, type MlpMeasurement } from '@/features/ai/protocol/mlp';
@@ -11,8 +12,11 @@ import { expectedPlan, planOutcomeMatches } from '@/features/ai/eval/expected-pl
 import { NATURAL_SEED } from '@/features/ai/eval/natural-cases';
 import { observeAiText, type AiTextMeasurement } from '@/features/ai/providers/text-client';
 
-interface RunOptions { folder: boolean; mode: 'ledger' | 'extraction'; suite: 'regression' | 'holdout'; cases?: string[] }
-const state: { evaluationSeed: number; phase: string; done: boolean; fatal?: string; results: Array<Record<string, unknown>>; model?: LocalModelConfig; loadMs?: number } = { evaluationSeed: NATURAL_SEED, phase: 'idle', done: false, results: [] };
+/** A remote Responses endpoint runs the same pipeline; requests are paced to its token rate limit, never retried. */
+interface RemoteOptions { baseUrl: string; model: string; apiKey: string; tokensPerMinute: number }
+interface RunOptions { folder: boolean; mode: 'ledger' | 'extraction'; suite: 'regression' | 'holdout'; cases?: string[]; remote?: RemoteOptions }
+type HarnessModel = LocalModelConfig | { kind: 'remote'; baseUrl: string; modelId: string };
+const state: { evaluationSeed: number; phase: string; done: boolean; fatal?: string; results: Array<Record<string, unknown>>; model?: HarnessModel; loadMs?: number } = { evaluationSeed: NATURAL_SEED, phase: 'idle', done: false, results: [] };
 const show = () => { document.querySelector('#status')!.textContent = JSON.stringify({ ...state, results: state.results.map(r => ({ id: r.id, passed: r.passed, structured: r.structured, ms: r.ms, error: r.error })) }, null, 2); };
 async function snapshot() {
   const db = await getDb();
@@ -42,9 +46,16 @@ async function run(options: RunOptions) {
       files = transfer.files;
       model = { kind: 'folder', modelId: 'foliodude-harness-qwen38', label: 'Harness model folder' };
     }
-    state.model = model;
-    await saveAiSettings({ backend: 'local', local: model });
-    const start = performance.now(); await loadLocalModel(model, files); state.loadMs = performance.now() - start; files = undefined;
+    const { remote } = options; let largestRequest = 3000;
+    if (remote) {
+      state.model = { kind: 'remote', baseUrl: remote.baseUrl, modelId: remote.model };
+      await saveApiKey({ provider: 'llm', apiKey: remote.apiKey, baseUrl: remote.baseUrl, model: remote.model });
+      await saveAiSettings({ backend: 'remote', local: null });
+    } else {
+      state.model = model;
+      await saveAiSettings({ backend: 'local', local: model });
+      const start = performance.now(); await loadLocalModel(model, files); state.loadMs = performance.now() - start; files = undefined;
+    }
     for (const fixture of fixtures) {
       state.phase = fixture.id; show();
       const db = await getDb(); await db.exec('TRUNCATE accounts RESTART IDENTITY CASCADE');
@@ -113,8 +124,17 @@ async function run(options: RunOptions) {
           inputTokens: calls.every(call => call.inputTokens !== null) ? calls.reduce((sum, call) => sum + call.inputTokens!, 0) : null,
           outputTokens: calls.every(call => call.outputTokens !== null) ? calls.reduce((sum, call) => sum + call.outputTokens!, 0) : null,
           responses: calls } }); show();
+      if (remote) {
+        // A rate-limited case says nothing about the model: end the repetition so it is rerun whole.
+        if (/\b429\b|rate limit/i.test(error ?? '')) throw new Error(`Remote rate limit reached at ${fixture.id}: ${error}`);
+        // Rejected generations report no usage; charge them the largest request seen so far.
+        for (const call of calls) if (call.inputTokens !== null && call.outputTokens !== null) largestRequest = Math.max(largestRequest, call.inputTokens + call.outputTokens);
+        const tokens = calls.reduce((sum, call) => sum + (call.inputTokens !== null && call.outputTokens !== null ? call.inputTokens + call.outputTokens : largestRequest), 0);
+        await new Promise(resolve => setTimeout(resolve, Math.max(0, tokens / remote.tokensPerMinute * 60_000 - ms)));
+      }
     }
-    await releaseLocalModel(); state.phase = 'complete';
+    if (!remote) await releaseLocalModel();
+    state.phase = 'complete';
   } catch (cause) { state.fatal = cause instanceof Error ? cause.stack : String(cause); state.phase = 'failed'; }
   finally { state.done = true; show(); }
 }
