@@ -8,6 +8,7 @@ import { type CurrencyId } from '@/lib/types/accounts';
 import { revalidate } from '@/lib/data/store';
 
 import { IntentActionFields, type EditableAction } from './intent-action-fields';
+import { IntentReceiptDialog } from './intent-receipt-dialog';
 type Phase = 'idle' | 'planning' | 'review' | 'saving' | 'saved';
 const money = (amount: number, currency: CurrencyId) => new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(amount);
 
@@ -19,7 +20,9 @@ export function IntentEntry({ disabled, onBusy }: { disabled: boolean; onBusy: (
   const [notice, setNotice] = useState<{ kind: 'clarification' | 'no_action'; reply: string } | null>(null);
   const [error, setError] = useState<ReturnType<typeof intentError> | null>(null);
   const [stale, setStale] = useState(false);
-  const [receipt, setReceipt] = useState<IntentReceipt | null>(null);
+  const [receipt, setReceipt] = useState<{ saved: IntentReceipt; actions: IntentReview['plan']['actions'] } | null>(null);
+  const [receiptOpen, setReceiptOpen] = useState(false);
+  const requestField = useRef<HTMLTextAreaElement>(null), receiptOpener = useRef<HTMLElement | null>(null);
   const active = useRef(false), request = useRef<AbortController | null>(null), draftRef = useRef<IntentDraft | null>(null);
   const busy = phase === 'planning' || phase === 'saving';
   useEffect(() => { onBusy(busy); }, [busy, onBusy]);
@@ -51,7 +54,9 @@ export function IntentEntry({ disabled, onBusy }: { disabled: boolean; onBusy: (
         replaceDraft(refreshed); setStale(false); setPhase('review');
       } else {
         const saved = await commitIntentDraft(draft!, actions, { signal: controller.signal });
-        setReceipt(saved); replaceDraft(null); setPhase('saved'); revalidate();
+        // Save unmounts its own button, so the receipt returns focus to the request.
+        receiptOpener.current = requestField.current;
+        setReceipt({ saved, actions: review!.plan.actions }); setReceiptOpen(true); replaceDraft(null); setPhase('saved'); revalidate();
       }
     } catch (cause) {
       setError(controller.signal.aborted ? { message: 'Cancelled. No ledger changes were saved.', detail: String(controller.signal.reason) } : intentError(cause));
@@ -84,7 +89,7 @@ export function IntentEntry({ disabled, onBusy }: { disabled: boolean; onBusy: (
     <ol className="flex gap-4 text-xs text-muted-foreground" aria-label="Entry progress">
       {['Describe', 'Review', 'Save', 'Receipt'].map((label, index) => <li key={label} aria-current={(phase === 'saving' ? index === 2 : phase === 'saved' ? index === 3 : draft ? index === 1 : index === 0) ? 'step' : undefined} className="aria-[current=step]:font-semibold aria-[current=step]:text-foreground">{index + 1}. {label}</li>)}
     </ol>
-    <Field label="What would you like to record?" htmlFor="intent-request"><Textarea id="intent-request" rows={4} value={text} onChange={event => updateText(event.target.value)} disabled={busy || disabled} placeholder="Create chase with $300, or move everything from my wallet to chase checking." aria-describedby="intent-help" /></Field>
+    <Field label="What would you like to record?" htmlFor="intent-request"><Textarea ref={requestField} id="intent-request" rows={4} value={text} onChange={event => updateText(event.target.value)} disabled={busy || disabled} placeholder="Create chase with $300, or move everything from my wallet to chase checking." aria-describedby="intent-help" /></Field>
     <p id="intent-help" className="text-xs text-muted-foreground">English and Chinese supported. An opening balance defaults to 0. Generating a preview does not save anything.</p>
     <div className="flex flex-wrap gap-2"><Button onClick={() => void run('prepare')} disabled={busy || disabled || !text.trim()}>{phase === 'planning' ? 'Generating preview…' : 'Generate preview'}</Button>{busy && <Button variant="outline" onClick={() => request.current?.abort()}>Cancel</Button>}</div>
     <div role="status" aria-live="polite" className="text-sm">{phase === 'planning' ? 'Preparing a preview. Your ledger has not changed.' : phase === 'saving' ? 'Saving all reviewed changes…' : notice && <div className="rounded-xl bg-muted/50 p-4"><p className="font-medium">{notice.kind === 'clarification' ? 'One more detail' : 'No changes to save'}</p><p className="mt-1">{notice.reply}</p>{notice.kind === 'clarification' && <p className="mt-2 text-xs text-muted-foreground">Add the missing detail to your request, then generate a new preview.</p>}</div>}</div>
@@ -98,7 +103,7 @@ export function IntentEntry({ disabled, onBusy }: { disabled: boolean; onBusy: (
             <h4 id={id('heading')} className="font-medium">{index + 1}. {action.action === 'create_account' ? 'Create account' : action.action === 'expense' ? 'Record expense' : 'Transfer money'}</h4>
             <IntentActionFields action={action} index={index} actions={actions} draft={draft} change={change} />
             {preview && <div className="rounded-lg bg-muted/40 p-3 text-sm" aria-live="polite">
-              <p className="font-medium">{preview.title}</p>
+              <p className="font-medium" data-step-title>{preview.title}</p>
               {action.action === 'create_account' ? <><p>{action.type === 'LIABILITY' ? 'Amount owed: ' : 'Starting balance: '}{money(action.type === 'LIABILITY' ? Math.abs(preview.amount) : preview.amount, preview.currency)}</p><p className="text-muted-foreground">No transaction will be created.</p></> : <><p>{action.amount === 'all' ? 'Estimated transfer: ' : 'Amount: '}{money(preview.amount, preview.currency)}</p>{preview.changes.map(item => <p key={item.id} className="text-muted-foreground">{item.name}: {money(item.before, item.currency)} → {money(item.after, item.currency)}</p>)}</>}
             </div>}
           </article>;
@@ -109,6 +114,7 @@ export function IntentEntry({ disabled, onBusy }: { disabled: boolean; onBusy: (
       <Button size="lg" onClick={() => void run('save')} disabled={busy || disabled || stale || !review}>Save {actions.length} {actions.length === 1 ? 'change' : 'changes'}</Button>
     </div>}
     {error && <div role="alert" className="space-y-2 rounded-xl border border-destructive/30 p-4 text-sm"><p className="text-destructive">{error.message}</p><details className="text-muted-foreground"><summary className="cursor-pointer">Technical details</summary><pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap text-xs">{error.detail}</pre></details></div>}
-    {receipt && <div role="status" className="space-y-3 rounded-xl border border-border bg-muted/30 p-4"><h3 className="font-medium">Saved {receipt.steps.length} {receipt.steps.length === 1 ? 'change' : 'changes'}</h3><ol className="space-y-2 text-sm">{receipt.preview.map((step, index) => <li key={index}>{index + 1}. {step.title} — {money(step.amount, step.currency)}</li>)}</ol><p className="text-xs text-muted-foreground">All changes were saved together.</p></div>}
+    {receipt && <div role="status" className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-muted/30 p-4 text-sm"><p>Saved {receipt.saved.steps.length} {receipt.saved.steps.length === 1 ? 'change' : 'changes'} together.</p><Button variant="outline" size="sm" onClick={event => { receiptOpener.current = event.currentTarget; setReceiptOpen(true); }}>View saved steps</Button></div>}
+    {receipt && <IntentReceiptDialog receipt={receipt.saved} actions={receipt.actions} open={receiptOpen} onOpenChange={setReceiptOpen} returnFocus={receiptOpener} />}
   </section>;
 }

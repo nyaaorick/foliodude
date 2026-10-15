@@ -85,7 +85,23 @@ try {
     if (!isFirefox)
         await page.evaluate(async (root) => { const { getDb } = await import(`/@fs${root}/lib/db/client.ts`); await (await getDb()).exec('TRUNCATE accounts RESTART IDENTITY CASCADE'); }, root);
     const generate = async (text, steps) => { current = { steps }; await fill('#intent-request', text); await click('Generate preview'); await contains(`Review ${steps.length} ${steps.length === 1 ? 'change' : 'changes'}`); };
-    const save = async (count) => { await click(`Save ${count} ${count === 1 ? 'change' : 'changes'}`); await contains(`Saved ${count} ${count === 1 ? 'change' : 'changes'}`); };
+    // Every successful Save opens the receipt dialog: same steps and titles as the preview, closed by Escape with focus back on the request.
+    const save = async (count, chain) => {
+        const titles = await page.evaluate(() => Array.from(document.querySelectorAll('[data-step-title]')).map(x => x.textContent));
+        await click(`Save ${count} ${count === 1 ? 'change' : 'changes'}`);
+        await page.waitForFunction(text => document.querySelector('[role=dialog]')?.innerText.includes(text), {}, `Saved ${count} ${count === 1 ? 'change' : 'changes'}`);
+        const dialog = await page.evaluate(() => { const d = document.querySelector('[role=dialog]'); const box = d.getBoundingClientRect(); return { steps: d.querySelectorAll('[data-receipt-step]').length, titles: Array.from(d.querySelectorAll('[data-step-title]')).map(x => x.textContent), chain: d.querySelector('[data-receipt-chain]')?.textContent ?? null, text: d.innerText, fits: box.left >= 0 && box.right <= innerWidth && document.documentElement.scrollWidth <= innerWidth }; });
+        if (dialog.steps !== count || JSON.stringify(dialog.titles) !== JSON.stringify(titles) || !dialog.fits || (chain && (dialog.chain !== chain.text || !chain.links.every(link => dialog.text.includes(link)))))
+            throw Error('Receipt dialog does not match the preview ' + JSON.stringify({ titles, dialog }));
+        if (chain && !isFirefox)
+            await page.screenshot({ path: artifact('recovery-pwa-receipt.png') });
+        // Firefox BiDi cannot send input actions to privileged extension pages; dispatch the same keydown there.
+        if (isFirefox)
+            await page.evaluate(() => document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true })));
+        else
+            await page.keyboard.press('Escape');
+        await page.waitForFunction(() => !document.querySelector('[role=dialog]') && document.activeElement?.id === 'intent-request');
+    };
     const snapshot = async () => page.evaluate(async (root) => { const { getDb } = await import(`/@fs${root}/lib/db/client.ts`); const db = await getDb(); return { accounts: (await db.query('SELECT name,balance FROM accounts ORDER BY name')).rows, transactions: (await db.query('SELECT amount FROM transactions ORDER BY seq')).rows }; }, root);
     await generate('创建一个账户, 叫chase', [{ action: 'create_account', name: 'chase' }]);
     await contains('Starting balance: $0.00');
@@ -127,8 +143,9 @@ try {
         await contains('Estimated transfer: $93.00');
         record('Stale balance blocks Save and refresh requires review');
     }
-    await save(2);
+    await save(2, { text: "spend $12.00 from Wallet → move Wallet's remainder to Bank", links: ['Uses Wallet from step 1', isFirefox ? 'Wallet: $88.00 → $0.00' : 'Wallet: $93.00 → $0.00', isFirefox ? 'Bank: $10.00 → $98.00' : 'Bank: $10.00 → $103.00'] });
     record('Explicit Save completes atomic dependent steps');
+    record('Receipt dialog lists the saved chain, closes on Escape and returns focus');
     current = { clarification: 'Which destination account should receive the money?' };
     await fill('#intent-request', 'Move all money from Wallet');
     await click('Generate preview');
