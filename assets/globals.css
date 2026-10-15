@@ -8,6 +8,7 @@
 @source "../pwa";
 @source "../pages";
 @source "../components";
+@source "../features";
 
 @custom-variant dark (&:is(.dark *));
 
