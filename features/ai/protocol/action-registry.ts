@@ -7,7 +7,7 @@ import { one } from '@/lib/db/sql';
 import type { Tx } from '@/lib/db/tx';
 import { EXPENSE_CATEGORIES } from '@/lib/data/expense-categories';
 import { AccountType, SUPPORTED_CURRENCIES, type CurrencyId } from '@/lib/types/accounts';
-import { REWARD_CURRENCY_IDS } from '@/lib/types/rewards';
+import { REWARD_CURRENCIES, REWARD_CURRENCY_IDS } from '@/lib/types/rewards';
 import { isWritable } from '@/lib/sync/writer';
 
 export interface MlpAccount { id: string; name: string; type: AccountType; currency: CurrencyId }
@@ -63,7 +63,7 @@ const creation = tool({
     balance: z.number().finite().default(0).describe('starting balance (0 default)'),
     credit_limit: z.number().finite().nonnegative().default(0).describe('credit limit if stated (0 default)'),
     reward_currency: z.enum(REWARD_CURRENCY_IDS).nullable().default(null).describe('reward program if stated') }).strict(),
-  plannerIntent: 'create', plannerFields: ['name', 'type', 'currency', 'balance', 'credit_limit'],
+  plannerIntent: 'create', plannerFields: ['name', 'type', 'currency', 'balance', 'credit_limit', 'reward_currency'],
   inputSchema: z.object({ name: Name, type: CreationType, currency: Currency, balance: z.number().finite(),
     credit_limit: z.number().finite().nonnegative(), reward_currency: z.enum(REWARD_CURRENCY_IDS).nullable() }).strict(),
   outputSchema: ResultSchema.extend({ intent: z.literal('create_account'), entity: z.literal('account'), data: z.looseObject({ id: z.string().uuid(), name: Name, type: CreationType, currency: Currency, balance: z.number().finite() }) }),
@@ -86,7 +86,7 @@ const expense = tool({
   extractionSchema: z.object({ account: Name.describe('literal account name'), amount: Money.describe('amount spent'),
     currency: Currency.optional().describe('account currency if stated'), date: z.string().date().optional().describe('YYYY-MM-DD if stated'),
     memo: z.string().optional().describe('note if stated'), category: z.enum(EXPENSE_CATEGORIES).optional().describe('spending category if clear') }).strict(),
-  plannerIntent: 'spend', plannerFields: ['account', 'amount', 'currency'],
+  plannerIntent: 'spend', plannerFields: ['account', 'amount', 'currency', 'memo'],
   inputSchema: z.object({ accountId: Reference, expectedType: CreationType, expectedCurrency: Currency, amount: Money,
     category: z.enum(EXPENSE_CATEGORIES), memo: z.string().optional(), date: z.string().date() }).strict(),
   outputSchema: ResultSchema.extend({ intent: z.enum(['create_assets_expense', 'create_expense']), entity: z.literal('transaction'), data: z.looseObject({ expense_id: z.string().uuid(), reward_id: z.string().uuid().nullable(), reward_points: z.number().finite() }) }),
@@ -112,7 +112,7 @@ const transfer = tool({
   extractionSchema: z.object({ from: Name.describe('literal source name'), to: Name.describe('literal destination name'), amount: z.union([Money, z.literal('all')]).describe('amount sent, or "all"'),
     fromCurrency: Currency.optional().describe('source currency if stated'), toCurrency: Currency.optional().describe('destination currency if stated'),
     targetAmount: Money.optional().describe('amount received; required across currencies'), memo: z.string().optional().describe('note if stated') }).strict(),
-  plannerIntent: 'transfer', plannerFields: ['from', 'to', 'amount', 'fromCurrency', 'toCurrency', 'targetAmount'],
+  plannerIntent: 'transfer', plannerFields: ['from', 'to', 'amount', 'fromCurrency', 'toCurrency', 'targetAmount', 'memo'],
   inputSchema: z.object({ fromAccountId: Reference, toAccountId: Reference, amount: z.union([Money, z.literal('all')]), targetAmount: Money.optional(),
     fromCurrency: Currency, toCurrency: Currency, memo: z.string().optional() }).strict(),
   outputSchema: ResultSchema.extend({ intent: z.literal('create_transfer'), entity: z.literal('transaction'), data: z.object({ transaction: z.looseObject({ id: z.string().uuid(), amount: Money }) }) }),
@@ -137,6 +137,11 @@ const transfer = tool({
     return { intent: 'create_transfer', entity: 'transaction', entityId: data.transaction.id, data: { ...data } };
   },
 });
+/** Optional extracted fields the request must state verbatim (any listed spelling); the model invents them otherwise. */
+export const STATED_FIELDS: Partial<Record<string, (value: string) => string[]>> = {
+  memo: value => [value],
+  reward_currency: value => [value, ...REWARD_CURRENCIES.filter(item => item.id === value).map(item => item.displayName)],
+};
 export const normalizeName = (name: string) => name.normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
 /** The sole action directory. MLP calls it directly; a future MCP view can reuse it. */
 export const ACTION_REGISTRY = Object.freeze({ create_account: creation, expense, transfer });

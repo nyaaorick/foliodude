@@ -43,8 +43,8 @@ try {
         if (body.temperature !== 0 || body.max_output_tokens !== 2048 || body.store !== false || !body.instructions.includes('ledger') || !body.input.includes('request')
             || format?.type !== 'json_schema' || format.strict !== true || format.name !== 'ledger_plan' || !format.schema?.properties?.result || /JSON|Markdown/.test(body.instructions + body.input))
             throw Error('Unexpected request contract');
-        // A conforming endpoint echoes the applied format; `ignoresFormat` simulates one that silently drops it.
-        return req.respond({ status: 200, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify({ id: 'resp_ui', object: 'response', status: 'completed', ...(ignoresFormat ? {} : { text: { format } }), output: [{ type: 'message', id: 'msg_ui', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: typeof current === 'string' ? current : JSON.stringify({ result: wire(current) }), annotations: [] }] }] }) });
+        // A conforming endpoint echoes the applied format; `ignoresFormat` simulates one that applied plain text instead.
+        return req.respond({ status: 200, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify({ id: 'resp_ui', object: 'response', status: 'completed', text: { format: ignoresFormat ? { type: 'text' } : format }, output: [{ type: 'message', id: 'msg_ui', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: typeof current === 'string' ? current : JSON.stringify({ result: wire(current) }), annotations: [] }] }] }) });
     };
     let rejectRequest;
     const requestFailure = new Promise((_, reject) => { rejectRequest = reject; });
@@ -166,7 +166,7 @@ try {
     ignoresFormat = true; current = { steps: [] };
     await fill('#intent-request', 'Do not transfer anything again');
     await click('Generate preview');
-    await contains('did not confirm json_schema output');
+    await contains('applied text instead of json_schema output');
     ignoresFormat = false;
     record('Endpoint without native JSON output is rejected explicitly');
     await generate('create Draft Only', [{ action: 'create_account', name: 'Draft Only' }]);

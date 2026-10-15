@@ -21,6 +21,8 @@ const applied = (response: OpenAI.Responses.Response, format: JsonSchemaFormat) 
   const echoed = response.text?.format;
   return echoed?.type === format.type && echoed.strict === format.strict;
 };
+/** Many compatible servers apply text.format without echoing it; only an echo of a different format is a refusal. */
+const contradicted = (response: OpenAI.Responses.Response, format: JsonSchemaFormat) => !!response.text?.format && !applied(response, format);
 const observers = new Set<(measurement: AiTextMeasurement) => void>();
 /** Measurements contain counts only, never prompt text, credentials or ledger data. */
 export function observeAiText(observer: (measurement: AiTextMeasurement) => void) {
@@ -41,8 +43,8 @@ async function generateResponse(client: OpenAI, model: string, instructions: str
     if (response.status !== 'completed') {
       throw new Error(response.error?.message ?? `AI response ${response.status}; no entries were created.`);
     }
-    // An endpoint that ignores text.format would return unconstrained text. Require the echoed format; never fall back.
-    if (!applied(response, format)) throw new Error(`The AI endpoint did not confirm ${format.type} output; it is unsupported for planning. No entries were created.`);
+    // An unechoed format is still checked: the plan is parsed against the strict schema, never repaired.
+    if (contradicted(response, format)) throw new Error(`The AI endpoint applied ${response.text!.format!.type} instead of ${format.type} output; it is unsupported for planning. No entries were created.`);
     const refusal = response.output.flatMap(item => item.type === 'message' ? item.content : []).find(part => part.type === 'refusal');
     if (refusal) throw new Error(`The AI declined the request: ${refusal.refusal}`);
     return output;

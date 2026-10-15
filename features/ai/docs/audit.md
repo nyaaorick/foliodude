@@ -289,3 +289,22 @@ natural-debt-en, natural-sequence, natural-question, natural-missing-target,
 natural-cross-currency, default-opening, opening-synonym, opening-inquiry,
 opening-hypothesis, expense-without-amount, transfer-without-amount, liability-account,
 create-and-spend. Status remains Experimental.
+
+### Review fixes on C+B+A (Edge regression ×1)
+
+- Memo (expense, transfer) and reward currency (create) are planner fields again.
+  An unstated value is dropped from the draft before review (`STATED_FIELDS`), so the
+  model's invented MR/RC never reached a draft. In this run they appeared only in
+  raw outputs that failed validation for other reasons.
+- A same-kind `multi` is a format failure. A missing `text.format` echo is accepted.
+  Acceptance is versioned separately from plan scoring (acceptance 3, scoring 2).
+
+| Step | Plans | Format | Opens / spends / transfers proposed (expected 21/9/10) | Wrong create of existing account | None / clarify correct | Over-long plans (8-step) | p50 planning ms |
+|---|---:|---:|---|---:|---|---:|---:|
+| C+B+A | 21/46 | 2 | 62 / 6 / 8 | 6 | 2/6, 0/4 | 12 (5) | 5765 |
+| + review fixes | 25/46 | 1 | 25 / 6 / 10 | 5 | 3/6, 0/4 | 7 (0) | 6567 |
+
+Newly passing: asset-expense (memo), natural-all-en-3, natural-all-zh-2,
+natural-question; none regressed. `liability-account` emitted the example placeholder
+"Acorn Jar" (rejected by grounding): the examples leak into outputs. Not yet
+measured ×3 or on holdout.

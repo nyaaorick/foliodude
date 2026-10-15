@@ -152,11 +152,17 @@ afterwards, and throws on any other keyword. Strict mode encodes optional fields
 required-nullable. Because a root union is unsupported, the internal
 `{steps} | {clarification}` union travels as `{"result": …}`. `result` starts with
 an `intent`: `create`, `spend` or `transfer` (from each tool's `plannerIntent`),
-`multi` (two or more steps), `none` or `ask`. Each branch fixes the plan's shape.
+`multi` (two or more steps of different kinds), `none` or `ask`. Each branch fixes the
+plan's shape; the grammar cannot express "different kinds", so `fromWire` rejects a
+same-kind `multi` as a format failure.
 The model fills only each tool's registry `plannerFields`: name/type/currency/
-balance/credit limit, account/amount/currency, and from/to/amount/currencies/
-`targetAmount`. Reward currency, memo, date and category take their defaults and
-stay editable in review. `fromWire` in `protocol/mlp.ts` is the single place that
+balance/credit limit/reward currency, account/amount/currency/memo, and
+from/to/amount/currencies/`targetAmount`/memo. Strict mode makes the model fill these
+optional fields, so a memo or reward currency is kept only when the request states it
+verbatim (a reward id needs a Latin word boundary, or its display name); otherwise it
+is dropped from the draft before review (`STATED_FIELDS`). Date and category are not
+extracted: a relative date or a guessed category cannot be grounded. They take their
+defaults and stay editable in review. `fromWire` in `protocol/mlp.ts` is the single place that
 unwraps the envelope, turns optional nulls back into omitted fields, and maps the
 intent back to the internal union. Draft types and business semantics are unchanged. The grammar
 makes the previously observed "both steps and clarification", wrong-root and
@@ -169,8 +175,10 @@ that satisfy the decoder can still fail Zod: a 0 amount, an empty name or
 clarification, or a non-ISO date. These are reported as `format` failures (diagnose
 category `format/constraint-outside-decoder-subset`).
 
-Unsupported capability handling: a response that does not echo the same
-`text.format` type and `strict` is rejected as unsupported. So is a 400 that names
+Unsupported capability handling: a response that echoes a different `text.format`
+type or `strict` is rejected as unsupported. Many compatible servers apply the format
+without echoing it, so a missing echo is accepted; the plan is still parsed against
+the strict schema and never repaired. So is a 400 that names
 the format/schema. Other 400s keep their own message. Refusals surface as errors.
 There is no prompt-formatting fallback, repair call or backend switch. Remote
 endpoints were verified only against intercepted fixtures, not a live provider.

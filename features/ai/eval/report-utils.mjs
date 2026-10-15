@@ -1,6 +1,8 @@
 import { readFile } from 'node:fs/promises';
 export const manifest = JSON.parse(await readFile(new URL('./fixtures/manifest.json', import.meta.url), 'utf8'));
 export const SCORING_VERSION = 2;
+/** 3: drafts for no-action requests are plan failures, not a separate gate. */
+export const ACCEPTANCE_VERSION = 3;
 /** Grade complete ordered fixture coverage, never a successful subset. */
 export function summarizeReport(report) {
     const results = report.runs.flatMap(run => run.results);
@@ -30,7 +32,7 @@ export function summarizeReport(report) {
         repetitionRequirementMet: report.runs.length >= (report.suite === 'holdout' ? 1 : 3),
     };
     acceptance.passed = coverageComplete && infrastructurePassed && configurationConsistent && acceptance.repetitionRequirementMet && acceptance.accuracy >= acceptance.threshold && acceptance.criticalPassed && acceptance.saveCorrect && !summary.preparationWrites;
-    return { scoringVersion: report.scoringVersion ?? SCORING_VERSION, acceptanceVersion: SCORING_VERSION, summary, acceptance };
+    return { scoringVersion: report.scoringVersion ?? SCORING_VERSION, acceptanceVersion: ACCEPTANCE_VERSION, summary, acceptance };
 }
 export function assertSameEvaluation(a, b) {
     for (const key of ['browser', 'version', 'gpu', 'evaluationSeed', 'mode', 'suite', 'folder'])

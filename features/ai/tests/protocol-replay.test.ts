@@ -20,6 +20,18 @@ describe('frozen protocol evidence', () => {
     await expect(prepareMlp('create Cash', [])).rejects.toMatchObject({ stage: 'format' });
     generate.mockResolvedValueOnce(JSON.stringify({ result: { intent: 'ask', clarification: '' } }));
     await expect(prepareMlp('create Cash', [])).rejects.toMatchObject({ stage: 'format' });
+    generate.mockResolvedValueOnce(JSON.stringify({ result: { intent: 'multi', steps: [step, { ...step, name: 'Bank' }] } }));
+    await expect(prepareMlp('create Cash and Bank', [])).rejects.toMatchObject({ stage: 'format' });
+    // Optional prose and reward programs are kept only when the request states them; invented values are dropped, not saved.
+    const card = { ...step, name: 'Gold', type: 'LIABILITY', reward_currency: 'MR' };
+    const wallet = { id: crypto.randomUUID(), name: 'Wallet', type: AccountType.ASSET, currency: 'USD' as const };
+    const spend = { action: 'expense', account: 'Wallet', amount: 12, currency: null, memo: '午饭' };
+    generate.mockResolvedValueOnce(JSON.stringify({ result: { intent: 'multi', steps: [card, spend] } }));
+    const invented = await prepareMlp('新增信用卡Gold；Wallet支付12，备注咖啡', [wallet]);
+    expect([invented.actions[0].action === 'create_account' && invented.actions[0].reward_currency, 'memo' in invented.actions[1], invented.steps[1].arguments.memo]).toEqual([null, false, undefined]);
+    generate.mockResolvedValueOnce(JSON.stringify({ result: { intent: 'multi', steps: [card, spend] } }));
+    const stated = await prepareMlp('新增信用卡Gold，积分MR；Wallet支付12，备注午饭', [wallet]);
+    expect([stated.actions[0], stated.steps[1].arguments]).toMatchObject([{ reward_currency: 'MR' }, { memo: '午饭' }]);
     generate.mockClear();
   });
   it('rejects observed malformed outputs without repair and preserves both fixture inventories', async () => {

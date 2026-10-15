@@ -60,12 +60,14 @@ describe('reviewable intent entry', () => {
       expect(body.text).toEqual({ format: MLP_OUTPUT_FORMAT }); expect(body.instructions + body.input).not.toMatch(/JSON|Markdown|brace/i);
     }
   });
-  it('fails explicitly when an endpoint ignores native JSON output or truncates it', async () => {
-    mockPlan({ steps: [newAccount] }, {});
-    await expect(prepareIntentDraft({ text: 'set up Cash with 50' })).rejects.toThrow('did not confirm json_schema');
+  it('fails explicitly when an endpoint applies another output format or truncates it', async () => {
+    mockPlan({ steps: [newAccount] }, { text: { format: { type: 'text' } } });
+    await expect(prepareIntentDraft({ text: 'set up Cash with 50' })).rejects.toThrow('applied text instead of json_schema');
+    mockPlan({ steps: [newAccount] }, {}); // An unechoed format is accepted; the strict schema still checks the plan.
+    expect((await prepareIntentDraft({ text: 'set up Cash with 50' })).status).toBe('ready');
     mockPlan({ steps: [newAccount] }, { status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' }, text: { format: MLP_OUTPUT_FORMAT } });
     await expect(prepareIntentDraft({ text: 'set up Cash with 50' })).rejects.toMatchObject({ stage: 'format' });
-    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenCalledTimes(3);
     expect((await ctx.db.query('SELECT * FROM accounts')).rows).toHaveLength(0);
   });
   it('uses the same local contract and rejects malformed, ungrounded or ambiguous extraction without writes', async () => {

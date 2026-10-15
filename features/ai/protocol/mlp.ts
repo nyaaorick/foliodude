@@ -4,7 +4,7 @@ import { localToday } from '@/lib/utils/local-date';
 import { AccountType, type CurrencyId } from '@/lib/types/accounts';
 import { AiOutputError, generateAiText } from '@/features/ai/providers/text-client';
 import { jsonSchemaFormat, withoutOptionalNulls } from '@/features/ai/protocol/output-format';
-import { ACTION_REGISTRY, normalizeName, type MlpAccount, type MlpActionName, type MlpActionResult } from '@/features/ai/protocol/action-registry';
+import { ACTION_REGISTRY, STATED_FIELDS, normalizeName, type MlpAccount, type MlpActionName, type MlpActionResult } from '@/features/ai/protocol/action-registry';
 export { ACTION_REGISTRY } from '@/features/ai/protocol/action-registry';
 
 export const MLP_LIMITS = Object.freeze({ steps: 8, candidates: 8, candidateChars: 320, instructionChars: 2000, inputChars: 4000 });
@@ -46,6 +46,8 @@ function fromWire(raw: string): MlpOutput {
     TOOLS.find(tool => tool.name === (step as { action?: unknown })?.action)?.plannerSchema.shape ?? {}));
   const result = MlpWireSchema.parse(value).result as { intent: string; clarification?: string; steps?: PlannerStep[] };
   if (result.intent === 'ask') return { clarification: result.clarification! };
+  // The grammar cannot express "different kinds"; same-kind steps belong to that action's own intent.
+  if (result.intent === 'multi' && new Set(result.steps!.map(step => step.action)).size < 2) throw Error(`Intent multi needs steps of different kinds; got only ${result.steps![0].action}.`);
   return { steps: result.steps ?? [] };
 }
 export class MlpError extends Error {
@@ -69,14 +71,14 @@ Execute only explicit requests or reported spending. Negation, questions, hypoth
 Copy exact names, casing, digits and spaces; exclude generic account/账户 suffixes. A category alone can be the account name.
 Opening defaults ASSET/USD/0. Credit cards, charge cards, owed money: LIABILITY with negative balance. Initial balance is not a transaction.
 Transfer amount "all" means remaining balance after prior steps. Do not guess money or unstated details. Missing amount/source/destination: ask. Cross-currency needs explicit targetAmount. Today ${today}.
-Examples (placeholder names):
+Examples:
 "Empty Acorn Jar into Maple Pouch" → transfer: Acorn Jar's whole remaining balance into Maple Pouch
 "枫叶钱包午饭花了12" → spend: 12 paid with 枫叶钱包
 "Should I move 30 out of Acorn Jar? Not yet" → none: only a question, nothing changes
 "从枫叶钱包转钱给橡果罐" → ask: 转多少？
 Actions:
 ${specs.join('\n')}`;
-  if (instructions.length > MLP_LIMITS.instructionChars) throw Error('MLP instructions exceed the context budget. Split the request.');
+  if (instructions.length > MLP_LIMITS.instructionChars) throw Error(`MLP instructions exceed the context budget (${instructions.length}/${MLP_LIMITS.instructionChars} characters).`);
   return instructions;
 }
 /** One Responses call performs semantic understanding and extraction together. */
@@ -101,16 +103,29 @@ export async function prepareMlp(text: string, accounts: MlpAccount[], signal?: 
 }
 /** Explicit user edits use the same schemas; only model extraction is grounded in source text. */
 export function normalizeMlp(actions: unknown, accounts: MlpAccount[], today = localToday(), text?: string): MlpPlan {
-  const selected = z.array(MlpActionSchema).max(MLP_LIMITS.steps).parse(actions);
   const eligible = accounts.filter(account => account.type === AccountType.ASSET || account.type === AccountType.LIABILITY);
-  const source = text === undefined ? undefined : normalizeName(text);
+  const source = text === undefined ? '' : normalizeName(text);
+  // Latin letters and digits need a word boundary, so a short id such as MR is not found inside another word;
+  // CJK text has no word spaces and matches as a substring.
+  const states = (spelling: string) => {
+    const wanted = normalizeName(spelling);
+    for (let at = source.indexOf(wanted); wanted && at >= 0; at = source.indexOf(wanted, at + 1))
+      if (!/[a-z0-9]/.test(source[at - 1] ?? '') && !/[a-z0-9]/.test(source[at + wanted.length] ?? '')) return true;
+    return false;
+  };
+  // Drop unstated optional prose before mapping, so review and save never see an invented value. User edits keep theirs.
+  const selected = z.array(MlpActionSchema).max(MLP_LIMITS.steps).parse(actions).map(action => text === undefined ? action : Object.fromEntries(Object.entries(action).flatMap(([key, value]) => {
+    const spellings = typeof value === 'string' ? STATED_FIELDS[key]?.(value) : undefined;
+    if (!spellings || spellings.some(states)) return [[key, value]];
+    return (ACTION_REGISTRY[action.action].extractionSchema.shape as Record<string, z.ZodType>)[key].safeParse(null).success ? [[key, null]] : [];
+  })) as MlpAction);
   const numbers = new Set(((text ?? '').match(/-?\d+(?:,\d{3})*(?:\.\d+)?/g) ?? []).map(number => Math.abs(Number(number.replaceAll(',', '')))));
   const available = [...eligible]; const steps: MlpStep[] = [];
   for (const [index, action] of selected.entries()) {
     const tool = ACTION_REGISTRY[action.action];
     const reason = tool.availability(available, steps.some(step => step.name === 'create_account'));
     if (reason) throw Error(reason);
-    const grounded = (name: string) => { if (source !== undefined && !source.includes(normalizeName(name))) throw Error(`Account name must remain verbatim: ${name}`); };
+    const grounded = (name: string) => { if (text !== undefined && !source.includes(normalizeName(name))) throw Error(`Account name must remain verbatim: ${name}`); };
     const { action: name, ...value } = action;
     const arguments_ = tool.map(value, {
       today,
