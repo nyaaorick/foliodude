@@ -27,7 +27,8 @@ async function snapshot() {
 async function run(options: RunOptions) {
   try {
     const suite = options.suite === 'holdout' ? holdoutCases() : HARNESS_CASES;
-    const fixtures = suite.filter(f => !options.cases || options.cases.includes(f.id));
+    // A selection runs in the order given, so the core suite matches the manifest order its coverage is graded against.
+    const fixtures = options.cases ? options.cases.flatMap(id => suite.filter(f => f.id === id)) : suite;
     if (!fixtures.length || options.cases?.some(id => !suite.some(f => f.id === id))) throw new Error('Unknown or empty fixture selection.');
     state.phase = 'loading'; show();
     let files: FileList | undefined;
