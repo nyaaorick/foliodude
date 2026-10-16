@@ -395,3 +395,25 @@ case-order fix in `475d743`). p50 2.1 s, about 20K tokens per run. The local mod
 scores 5/10 on the same cases, so the remaining failures are local-model limits:
 multi-step plans, card-repayment direction, creating instead of using an existing
 account, the ask-example leak, and amount 0 for a missing amount.
+
+### Fine-tuning smoke test: source → MLC → browser (2026-10-16)
+
+Goal: prove the conversion chain before generating data or training. Toolchain: the
+pinned environment of `~/Desktop/Developer_Workspace/qwen3.8-4b-mlc` (`.venv-mlc`:
+mlc-llm-nightly-cpu 0.26.dev6, mlc-ai-nightly-cpu 0.26.dev246, apache-tvm-ffi 0.1.13,
+re-signed dylibs, `scripts/vendor/patch-mlc-nightly.py`). A fresh `pip --pre` install
+does not work on this Mac: broken ad-hoc signatures, an RC tvm-ffi, and an abort in
+`libtvm_runtime_extra` initialisation.
+
+1. Source `empero-ai/Qwen3.8-2B-Distill` (sha256 df4076…5ce5) in
+   `~/Desktop/Developer_Workspace/models/hf/`.
+2. `03_trim.py` → text-only checkpoint (1.88B params, 3.76 GB; vision and MTP dropped).
+3. `convert_weight --quantization q4f16_1` and `gen_config` with the 4B script's flags,
+   then temperature 0.6 / top_p 0.95.
+4. Result: all 26 shards, `tensor-cache.json`, tokenizer and config are byte-identical
+   to the published `nyaaorick/Qwen3.8-2B-q4f16_1-MLC`, so its wasm is reused without
+   compiling.
+5. Folder import through the harness: core suite 5/10, the same cases as the published
+   model.
+
+A LoRA-fused bf16 checkpoint with the same tensor names can follow steps 2–4 unchanged.
