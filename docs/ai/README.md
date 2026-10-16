@@ -292,6 +292,12 @@ fail with its named error, so no fixture is unpassable. The rules the cases enco
 Still undecided: whether `ask` may substitute for `none` on how-to questions, and
 whether `none`/`ask` may substitute for `reject` when an account is missing.
 
+## Model files and fine-tuning
+
+Model weights live outside the repo in `~/Desktop/Developer_Workspace/models/`. Its
+README lists every model with provenance, gives the pinned MLC conversion recipe, and
+tracks the LoRA fine-tuning target (core 10/10, holdout ≥ 90%).
+
 ## Findings and proposals
 
 Recognition gates remain failed and the UI remains Experimental. Latest complete
