@@ -31,6 +31,7 @@ registry in process. There is no MCP transport or keyword intent router.
 Run from the repository root. Browser executables default to the installed macOS
 Edge/Firefox paths; `FOLIO_AI_BROWSER_PATH` overrides the real-model runner path.
 
+<!-- AUTO-GENERATED: AI commands from package.json scripts (ai:*, harness:ai) and eval/*.mjs --help -->
 | Command | Purpose |
 |---|---|
 | `npm run ai:test` | Real PGlite boundaries, protocol replay, endpoint storage and evaluator gates; no GPU/model download |
@@ -40,6 +41,7 @@ Edge/Firefox paths; `FOLIO_AI_BROWSER_PATH` overrides the real-model runner path
 | `npm run ai:smoke` | Three real Edge cases, seed 20261012; diagnostic subset, never an acceptance pass |
 | `npm run ai:eval -- --full` | Sequential Edge/Firefox 46-case regression ×3 and 100-case holdout ×1; keep lid open |
 | `npm run harness:ai -- --help` | Individual browser/suite/seed/repeat/case/model-folder selection |
+| `npm run harness:ai -- --remote …` | Same pipeline against the remote endpoint in the gitignored root `config.json` (see Remote evaluation) |
 | `npm run ai:report -- results --baseline --verification FILE` | Frozen four-suite report plus actual application verification |
 | `npm run ai:report -- diagnose` | Offline classification of all 476 frozen baseline records; writes a new diagnostic report |
 | `npm run ai:report -- diagnose REPORT...` | Diagnose new reports using the same categories |
@@ -47,6 +49,7 @@ Edge/Firefox paths; `FOLIO_AI_BROWSER_PATH` overrides the real-model runner path
 | `npm run ai:report -- retain REPORT --runs 1,3 --output NEW` | Retain whole complete repetitions with unchanged current source hashes; preserve originals and error provenance |
 | `npm run ai:report -- merge REPORTS... --output NEW` | Merge compatible whole repetitions with matching model/fixtures/core sources |
 | `npm run ai:report -- compare BEFORE AFTER` | Same browser/model/fixtures/repeat-count comparison, including plan versus ledger scores |
+<!-- END AUTO-GENERATED -->
 
 Export one comparable frozen report with `ai:report -- summary
 features/ai/eval/fixtures/baseline.json --select edge/regression --output NEW`.
@@ -58,6 +61,10 @@ Scoring version 2 requires a validated draft for successful requests. Ledger-mod
 acceptance also requires correct saves for every plan-correct case; batch success
 requires successful runner exits. Plan and save scores remain separate. Version 1
 reports remain immutable historical evidence; do not compare scores across versions.
+Acceptance is versioned separately (`ACCEPTANCE_VERSION` 3 in `eval/report-utils.mjs`):
+version 3 dropped the separate no-executable-negative-draft gate. Comparisons also
+refuse reports whose fixtures or expectations differ, so a fixture change (such as
+the card-brand rule below) starts a new comparison series.
 
 Real-model acceptance is **95% regression**, all critical cases, at least three
 complete repetitions; **90% holdout**. A draft proposed for a negative or
@@ -88,6 +95,23 @@ Reports, screenshots, generated logs, profiles and model caches stay in ignored
 `.artifacts/ai/`; model weights do not belong in this source directory. Runtime
 adapter source stays owned by the pinned dependency under `node_modules`.
 
+## Remote evaluation
+
+`harness:ai -- --remote` runs the unchanged pipeline against the Responses endpoint
+in the gitignored root `config.json`:
+
+```json
+{ "remote": { "baseUrl": "https://api.groq.com/openai/v1", "model": "openai/gpt-oss-120b", "apiKey": "…", "tokensPerMinute": 8000 } }
+```
+
+The harness stores the endpoint with the app's own `saveApiKey` and selects the
+remote backend; reports record only `baseUrl` and `model`, never the key. Cases are
+paced to `tokensPerMinute` (default 8000) from reported usage. A rejected generation
+reports no usage, so it is charged the largest request seen. A 429 ends the
+repetition as an infrastructure fault, so rerun it whole. Groq's free tier also
+caps daily tokens, so a full suite spans several days. `ai:report -- compare`
+refuses local-versus-remote pairs (model differs); compare those reports by case.
+
 ## Loading and using AI
 
 On Lab, choose Remote API or Local WebGPU. Remote mode needs a Responses base URL,
@@ -108,7 +132,9 @@ cleared or evicted. Local inference needs WebGPU, IndexedDB, Cache Storage and H
 or localhost; no CPU fallback. iOS support has not been established.
 
 Every request follows Describe → Review → Save → Receipt. Openings default to
-ASSET/USD/0; debt is a negative liability balance with no transaction. Expenses and
+ASSET/USD/0. A card, charge card, or card brand/issuer named as the account (Amex,
+Visa) opens a LIABILITY; a bank account (chase checking) stays ASSET. Debt is a
+negative liability balance with no transaction. Expenses and
 transfers never implicitly create accounts. Missing information asks for clarification.
 `"all"` resolves the locked remaining source balance after preceding steps. Cross-
 currency transfers require an explicit received amount. Edit fields before saving;
@@ -183,33 +209,73 @@ Native constraints do not replace understanding or checks. Zod, grounding, regis
 permissions, preview, stale-state checks and the DB CHECKs all still apply. Outputs
 that satisfy the decoder can still fail Zod: a 0 amount, an empty name or
 clarification, or a non-ISO date. These are reported as `format` failures (diagnose
-category `format/constraint-outside-decoder-subset`).
+category `format/constraint-outside-decoder-subset`). One documented exception: the
+local model writes `transfer` with `amount: 0` for "move everything", which the
+decoder cannot exclude, so `fromWire` reads a 0 transfer as `transfer_all`. A request
+that gives no amount can therefore produce a move-everything draft; Review shows
+"Entire remaining balance" and Save still needs explicit confirmation.
+
+A provider that validates after generating (Groq) returns a 400
+`json_validate_failed` with the rejected output in `failed_generation`; that is the
+model's `format` failure, not a missing capability.
 
 Unsupported capability handling: a response that echoes a different `text.format`
 type or `strict` is rejected as unsupported. Many compatible servers apply the format
 without echoing it, so a missing echo is accepted; the plan is still parsed against
 the strict schema and never repaired. So is a 400 that names
 the format/schema. Other 400s keep their own message. Refusals surface as errors.
-There is no prompt-formatting fallback, repair call or backend switch. Remote
-endpoints were verified only against intercepted fixtures, not a live provider.
+There is no prompt-formatting fallback, repair call or backend switch. Remote mode is
+verified live against Groq `openai/gpt-oss-120b` (Responses API, strict
+`json_schema`, CORS) and in UI tests against an intercepted fixture endpoint.
 
 Production prompt: removed "Output one JSON object…", "No Markdown or
 explanations", `{"steps":[]}` / `{"clarification":…}` shapes, "Never combine steps
 and clarification", "Amounts/balances are JSON numbers", "Omit unknown optional
 fields, no null", both JSON examples, "JSON only. Stop after the closing brace", the
 input suffix, and enum-spelling/type hints in registry field descriptions. Retained:
-verbatim names and generic-suffix exclusion, ASSET/USD/0 defaults, initial debt as
-a negative LIABILITY with no transaction, negation/question/hypothetical/greeting =
-no action, missing information → clarification, ordered dependent steps and
-pronouns, no implicit creation of existing accounts, `"all"` after prior steps,
-explicit cross-currency `targetAmount`, today's date. `YYYY-MM-DD` stays because the
-decoder cannot express date patterns.
+verbatim names and generic-suffix exclusion, ASSET/USD/0 defaults, cards and card
+brands (Amex, Visa) as LIABILITY, initial debt as a negative LIABILITY with no
+transaction, negation/question/hypothetical/greeting = no action, missing
+information → clarification, ordered dependent steps and pronouns, no implicit
+creation of existing accounts, explicit cross-currency `targetAmount`, today's date.
+Added: four placeholder-name examples (transfer_all, spend, none, ask; two English,
+two Chinese; no JSON syntax), and one line per planner view generated from the
+registry (later views of an action are described against its first, e.g.
+`transfer_all: …; as transfer, without amount`). The budget is
+`MLP_LIMITS.instructionChars` = 2000. `YYYY-MM-DD` stays because the decoder cannot
+express date patterns.
+
+## Fixture expectations
+
+Expectations live only in code: outcomes in `eval/cases.ts`, `eval/natural-cases.ts`
+and `eval/holdout-cases.ts`; exact plans in `eval/expected-plans.ts`; scoring in
+`planOutcomeMatches` there. The rules they encode:
+
+- `success`: a validated draft whose steps and operational parameters match exactly
+  (unrequested optional memo/category/date are not scored).
+- `no_action`: the model must answer `none`. A clarification instead is a failure.
+- `clarification`: the model must answer `ask`.
+- `reject`: the model must faithfully extract the stated plan, and host validation
+  must reject it with the named error (`Account already exists`, `Account not found`).
+  Answering `none` or `ask` instead is a failure.
+- `cancel`: a host-contract check that abort reaches the request.
+- Card brands/issuers open as LIABILITY (`default-opening`, `opening-synonym`,
+  `opening-duplicate`).
+
+Open questions, not yet decided: whether `ask` may substitute for `none` on how-to
+questions (`opening-inquiry`); whether `none`/`ask` may substitute for `reject` when
+the account exists or is missing (`opening-duplicate`, `missing-account`); and
+whether a type prefix such as 现金账户 is stripped from the name (`after-cancel`;
+the prompt only names generic suffixes).
 
 ## Findings and proposals
 
-Recognition gates remain failed and the UI remains Experimental. Native JSON (0.1.4)
-removed syntax/envelope failures, but those cases became semantic failures; regression
-accuracy is unchanged (Edge 30/138, Firefox 33/138) and the partial holdout regressed. The
-[failure audit and prioritized experiments](audit.md) records the frozen
-baseline, observed failures and remaining model/runtime hypotheses. Development
-fixture wording may guide experiments; holdout wording must remain excluded.
+Recognition gates remain failed and the UI remains Experimental. Latest complete
+local evaluation (C+B+A, before the review fixes): Edge regression 65/138, Firefox
+62/138, Edge holdout 48/100, Firefox holdout 50/100; 14 of 20 critical cases fail in
+both browsers. Single Edge regression repetitions since then, with fixtures before
+the card-brand change: review fixes 25/46; transfer split 18/46 (the local model
+wrote `transfer` with amount 0); remote `gpt-oss-120b` on the same pipeline 40/46.
+The remote result shows the pipeline is not the main limit. The
+[failure audit and experiments](audit.md) records every step. Development fixture
+wording may guide experiments; holdout wording must remain excluded.

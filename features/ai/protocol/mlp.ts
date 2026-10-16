@@ -88,10 +88,10 @@ function compile(request: ReturnType<typeof context>, today: string) {
   }));
   // Output syntax is enforced by MLP_OUTPUT_FORMAT; instructions carry only ledger semantics.
   const intents = request.tools.map(tool => `${tool.plannerIntent} (only ${tool.plannerViews.map(view => view.name).join('/')} steps)`).join(', ');
-  const instructions = `Extract Chinese/English ledger actions. First classify the whole request: ${intents}, multi (several different kinds of steps), none (nothing should change), ask (required information is missing; ask one short question).
+  const instructions = `Extract Chinese/English ledger actions. First classify the whole request: ${intents}, multi (steps of different kinds), none (no change), ask (required info missing; ask one short question).
 Execute only explicit requests or reported spending. Negation, questions, hypotheticals, greetings: none. Include ALL steps in order; resolve pronouns. Never create an existing account to spend/transfer.
 Copy exact names, casing, digits and spaces; exclude generic account/账户 suffixes. A category alone can be the account name.
-Opening defaults ASSET/USD/0. Credit cards, charge cards, owed money: LIABILITY with negative balance. Initial balance is not a transaction.
+Opening defaults ASSET/USD/0. Credit cards, charge cards, card brands (Amex, Visa), owed money: LIABILITY with negative balance. Initial balance is not a transaction.
 Do not guess money or unstated details. Missing amount/source/destination: ask. Cross-currency needs explicit targetAmount. Today ${today}.
 Examples:
 "Empty Acorn Jar into Maple Pouch" → transfer_all: Acorn Jar's remaining balance into Maple Pouch

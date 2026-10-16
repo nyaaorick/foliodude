@@ -7,7 +7,8 @@ export interface HarnessCase {
 }
 const wallet = { name: '实机钱包', type: AccountType.ASSET, currency: 'USD' as const, balance: 100 };
 const card = { name: '实机信用卡', type: AccountType.LIABILITY, currency: 'USD' as const, balance: -20, credit_limit: 1000 };
-const amex = { name: 'amex', type: AccountType.ASSET, currency: 'USD' as const, balance: 0 };
+// A card brand or issuer named as the account (amex, Visa) opens a credit card: LIABILITY.
+const amex = { name: 'amex', type: AccountType.LIABILITY, currency: 'USD' as const, balance: 0 };
 export const HARNESS_CASES: HarnessCase[] = [
   ...naturalCases(),
   { id: 'default-opening', text: '我要创立一个amex账户', seed: [], expected: { accounts: [amex], transactions: 0, outcome: 'success' } },
