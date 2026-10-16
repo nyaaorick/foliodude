@@ -7,6 +7,8 @@ import type { JsonSchemaFormat } from '@/features/ai/protocol/output-format';
 
 export interface AiTextMeasurement {
   instructionChars: number; inputChars: number; outputChars: number;
+  /** The raw response text, for evaluation reports; null when no response arrived. */
+  output: string | null;
   inputTokens: number | null; outputTokens: number | null; ms: number;
   /** The format the endpoint echoed as applied, or `unconfirmed`. */
   outputMode: string; status: string | null;
@@ -60,7 +62,7 @@ async function generateResponse(client: OpenAI, model: string, instructions: str
     throw cause;
   } finally {
     const measurement: AiTextMeasurement = { instructionChars: instructions.length, inputChars: input.length,
-      outputChars: response?.output_text?.length ?? 0, inputTokens: response?.usage?.input_tokens ?? null,
+      outputChars: response?.output_text?.length ?? 0, output: response?.output_text ?? null, inputTokens: response?.usage?.input_tokens ?? null,
       outputTokens: response?.usage?.output_tokens ?? null, ms: performance.now() - started,
       outputMode: response && applied(response, format) ? `${format.type}${format.strict ? ':strict' : ''}` : 'unconfirmed', status: response?.status ?? null };
     for (const observer of observers) observer(measurement);
