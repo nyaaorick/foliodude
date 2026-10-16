@@ -370,3 +370,20 @@ ASSET), re-creating an existing account instead of using it (spend-memo-en,
 match-part-zh, multi-repay-spend-en), and the received amount used as the sent amount
 (transfer-cross-en). After this run, multi-two-transfers-zh was made unambiguous; its
 second source was unstated, and the model's reading was valid.
+
+### Intent-first variants on the core suite (Edge, 2 runs each, 2026-10-16)
+
+Raw outputs (now kept for every call) showed `multi-three-en` writing intent `create`
+and stopping after one step, which looked like B's per-action lock. Two variants
+were measured and reverted:
+
+| Wire intent | Core plans (run 1 / run 2) | Notes |
+|---|---|---|
+| B: create/spend/transfer lock steps to that action; multi for mixes | 5/10 (earlier run) | baseline |
+| none / ask / plan (any mix) | 1/10 / 1/10 | the model chose ask or none for almost everything, including "从现金钱包转300到招商银行" |
+| create/spend/transfer, any mix of steps | 4/10 / 4/10 | transfer-all-en-1 regressed: intent transfer but a create_account step, which B's lock forbids |
+
+In both variants `multi-three-en` still stopped after its first step, so the lock is
+not why multi-step plans end early; the local model ends after one step. The
+action-named first token matters: an abstract `plan` label collapsed the model onto
+ask/none. B stays.
