@@ -162,8 +162,8 @@ async function results(args) {
         const graded = summarizeReport(r);
         if (r.browser !== expectedBrowser || r.suite !== expectedSuite || r.mode !== 'ledger' || r.runs.length !== expectedRuns || !graded.acceptance.coverageComplete || !graded.acceptance.infrastructurePassed)
             throw Error('Use four complete, compatible, full-coverage evaluations.');
-        if (r.evaluationSeed !== reports[0].evaluationSeed || JSON.stringify(r.runs[0].model) !== JSON.stringify(reports[0].runs[0].model))
-            throw Error('Model or fixture seed changed.');
+        if (JSON.stringify(r.runs[0].model) !== JSON.stringify(reports[0].runs[0].model))
+            throw Error('Model changed.');
         for (const [file, hash] of Object.entries(reports[0].sources))
             if (!file.endsWith('/run.mjs') && r.sources[file] !== hash)
                 throw Error(`Source changed across suites: ${file}`);

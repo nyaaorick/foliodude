@@ -12,7 +12,7 @@ const root = fileURLToPath(new URL('../../..', import.meta.url));
 const args = process.argv.slice(2);
 const value = (name, fallback) => { const index = args.indexOf(name); return index < 0 ? fallback : args[index + 1]; };
 if (args.includes('--help')) {
-  console.log('npm run harness:ai -- [--browser edge|chrome|firefox] [--folder /path/to/compiled-model] [--mode ledger|extraction] [--cases comma,separated,ids] [--repeat 1] [--seed 20261011] [--suite regression|holdout] [--remote]');
+  console.log('npm run harness:ai -- [--browser edge|chrome|firefox] [--folder /path/to/compiled-model] [--mode ledger|extraction] [--cases comma,separated,ids] [--repeat 1] [--suite regression|holdout] [--remote]');
   console.log('--remote: the Responses endpoint in the gitignored config.json ({"remote":{"baseUrl","model","apiKey","tokensPerMinute"}}), paced to its token limit.');
   console.log('Uses a managed test profile and isolated synthetic ledger on 127.0.0.1:4175. Default source: direct Hugging Face URL. Set FOLIO_AI_BROWSER_PATH for other installed browser locations.');
   process.exit(0);
@@ -21,8 +21,6 @@ const browserName = value('--browser', 'edge');
 const mode = value('--mode', 'ledger');
 const suite = value('--suite', 'regression');
 const repeat = Number(value('--repeat', '1'));
-const evaluationSeed = Number(value('--seed', '20261011'));
-if (!Number.isSafeInteger(evaluationSeed) || evaluationSeed < 0 || evaluationSeed > 0xffffffff) throw Error('Invalid evaluation seed.');
 if (!['regression', 'holdout'].includes(suite) || !['edge', 'chrome', 'firefox'].includes(browserName) || !['ledger', 'extraction'].includes(mode) || !Number.isInteger(repeat) || repeat < 1) throw Error('Invalid browser, mode or repeat count. Use --help.');
 const defaults = { edge: '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge', chrome: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', firefox: '/Applications/Firefox.app/Contents/MacOS/firefox' };
 const executablePath = process.env.FOLIO_AI_BROWSER_PATH || defaults[browserName];
@@ -40,7 +38,7 @@ async function sourceHashes() {
 }
 const packageVersions = Object.fromEntries(await Promise.all(['everything-webgpu','openai'].map(async name => [name, JSON.parse(await readFile(path.join(root,'node_modules',name,'package.json'),'utf8')).version])));
 const diagnosticOnly = args.includes('--cases');
-const report = { diagnosticOnly, packageVersions, requestParameters: { temperature: 0, max_output_tokens: 2048, store: false }, evaluationSeed, browser: browserName, executablePath, mode, suite, folder: modelRoot, remote: remote && { baseUrl: remote.baseUrl, model: remote.model }, runs: [], consoleErrors: [], artifactErrors: [], sources: await sourceHashes() };
+const report = { diagnosticOnly, packageVersions, requestParameters: { temperature: 0, max_output_tokens: 2048, store: false }, browser: browserName, executablePath, mode, suite, folder: modelRoot, remote: remote && { baseUrl: remote.baseUrl, model: remote.model }, runs: [], consoleErrors: [], artifactErrors: [], sources: await sourceHashes() };
 const flush = () => writeFile(reportFile, JSON.stringify(report, null, 2));
 const server = await createServer({ configFile: false, root: path.join(root, 'features/ai/eval'),
   resolve: { alias: { '@': root } }, server: { host: '127.0.0.1', port: 4175, strictPort: true, fs: { allow: [root] } },
@@ -74,7 +72,7 @@ try {
   report.version = await browser.version();
   const page = await browser.newPage();
   page.on('pageerror', error => report.consoleErrors.push(String(error)));
-  await page.goto(`http://127.0.0.1:4175/?seed=${evaluationSeed}`);
+  await page.goto('http://127.0.0.1:4175/');
   await page.waitForFunction(() => !!window.folioHarness, { timeout: 120000 });
   report.gpu = await page.evaluate(async () => { const a = await navigator.gpu?.requestAdapter(); return a ? { vendor: a.info?.vendor, architecture: a.info?.architecture, description: a.info?.description } : null; });
   for (let index = 0; index < repeat; index++) {

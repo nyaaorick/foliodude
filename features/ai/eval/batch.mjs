@@ -14,7 +14,7 @@ evaluation: for (const suite of ['regression', 'holdout'])
     for (const browser of ['edge', 'firefox']) {
         console.log(`${browser}/${suite}`);
         let stdout = '';
-        const exitCode = await new Promise((resolve, reject) => { const p = spawn(process.execPath, ['features/ai/eval/run.mjs', '--browser', browser, '--suite', suite, '--seed', '20261012', '--repeat', suite === 'regression' ? '3' : '1'], { cwd: root, stdio: ['ignore', 'pipe', 'inherit'] }); p.stdout.on('data', chunk => { stdout += chunk; process.stdout.write(chunk); }); p.once('error', reject); p.once('close', resolve); });
+        const exitCode = await new Promise((resolve, reject) => { const p = spawn(process.execPath, ['features/ai/eval/run.mjs', '--browser', browser, '--suite', suite, '--repeat', suite === 'regression' ? '3' : '1'], { cwd: root, stdio: ['ignore', 'pipe', 'inherit'] }); p.stdout.on('data', chunk => { stdout += chunk; process.stdout.write(chunk); }); p.once('error', reject); p.once('close', resolve); });
         const file = stdout.trim().split('\n').findLast(x => x.startsWith('Report: '))?.slice(8);
         const report = file ? JSON.parse(await readFile(file, 'utf8')) : null;
         batch.runs.push({ browser, suite, exitCode, file, summary: report?.summary, acceptance: report?.acceptance, fatal: report?.fatal });

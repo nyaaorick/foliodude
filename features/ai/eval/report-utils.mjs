@@ -35,7 +35,7 @@ export function summarizeReport(report) {
     return { scoringVersion: report.scoringVersion ?? SCORING_VERSION, acceptanceVersion: ACCEPTANCE_VERSION, summary, acceptance };
 }
 export function assertSameEvaluation(a, b) {
-    for (const key of ['browser', 'version', 'gpu', 'evaluationSeed', 'mode', 'suite', 'folder'])
+    for (const key of ['browser', 'version', 'gpu', 'mode', 'suite', 'folder', 'remote'])
         if (JSON.stringify(a[key]) !== JSON.stringify(b[key]))
             throw Error(`Configuration differs: ${key}`);
     if (JSON.stringify(a.runs[0]?.model) !== JSON.stringify(b.runs[0]?.model))

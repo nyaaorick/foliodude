@@ -8,7 +8,10 @@ describe('evaluation acceptance',()=>{
     expect(reports.map(r=>summarizeReport(r).summary.plansPassed)).toEqual([28,35,46,44]);
     expect(reports.map(r=>summarizeReport(r).summary.executableNegativeDrafts)).toEqual([0,0,1,3]);
     expect(reports.every(r=>!summarizeReport(r).acceptance.passed)).toBe(true);
-    const savesFailed = structuredClone(reports[0]);
+    // Coverage is graded against the current manifest; the frozen baseline predates it, so derive a complete report from it.
+    const current = structuredClone(reports[0]);
+    for (const run of current.runs) run.results = manifest.regressionIds.map(id => ({ ...structuredClone(run.results[0]), id, expected: { ...run.results[0].expected, outcome: 'success' } }));
+    const savesFailed = structuredClone(current);
     for (const run of savesFailed.runs) for (const row of run.results) {
       Object.assign(row, { planPassed: true, passed: false, ledgerPassed: false, previewUnchanged: true });
       if (row.expected.outcome === 'no_action') row.extracted = [];
@@ -35,11 +38,12 @@ describe('evaluation acceptance',()=>{
     const wrongDraft=structuredClone(reports[0]);Object.assign(wrongDraft.runs[0].results[0],{planPassed:false,ledgerPassed:true});
     expect(summarizeReport(wrongDraft).summary.plansPassed).toBe(27);
     expect(summarizeReport(wrongDraft).summary.ledgersPassed).toBe(28);
-    const duplicate=structuredClone(reports[0]);duplicate.runs[0].results[1]=duplicate.runs[0].results[0];
+    expect(summarizeReport(current).acceptance.coverageComplete).toBe(true);
+    const duplicate=structuredClone(current);duplicate.runs[0].results[1]=duplicate.runs[0].results[0];
     expect(summarizeReport(duplicate).acceptance.coverageComplete).toBe(false);
     const mixedModel=structuredClone(reports[0]);mixedModel.runs[1].model.modelId='other-model';
     expect(summarizeReport(mixedModel).acceptance.configurationConsistent).toBe(false);
-    const interrupted=structuredClone(reports[0]);interrupted.runs[1].done=false;interrupted.fatal='Detached frame';
+    const interrupted=structuredClone(current);interrupted.runs[1].done=false;interrupted.fatal='Detached frame';
     expect(()=>retainRuns(interrupted,[1])).toThrow('incomplete');
     const retained=retainRuns(interrupted,[0,2]);
     expect(retained.runs).toHaveLength(2);expect(retained.provenance.originalFatal).toBe('Detached frame');

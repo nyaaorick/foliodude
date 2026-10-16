@@ -24,6 +24,15 @@ describe('frozen protocol evidence', () => {
     const accounts = [{ id: crypto.randomUUID(), name: 'Cash', type: AccountType.ASSET, currency: 'USD' as const }, { id: crypto.randomUUID(), name: 'Bank', type: AccountType.ASSET, currency: 'USD' as const }];
     generate.mockResolvedValueOnce(JSON.stringify({ result: { intent: 'transfer', steps: [{ action: 'transfer', from: 'Cash', to: 'Bank', amount: 0, fromCurrency: 'USD', toCurrency: 'USD', targetAmount: 0, memo: '' }] } }));
     expect((await prepareMlp('move everything from Cash to Bank', accounts)).actions).toMatchObject([{ action: 'transfer', amount: 'all' }]);
+    // An existing account named by a unique part of its name is used, never re-created; an ambiguous part is rejected.
+    const chase = { id: crypto.randomUUID(), name: 'chase checking', type: AccountType.ASSET, currency: 'USD' as const };
+    const debit = (account: string) => JSON.stringify({ result: { intent: 'spend', steps: [{ action: 'expense', account, amount: 12, currency: null, memo: null }] } });
+    for (const account of ['chase', 'chase checking']) {
+      generate.mockResolvedValueOnce(debit(account));
+      expect((await prepareMlp('把我chase里记录一笔debit消费12', [chase])).actions).toMatchObject([{ action: 'expense', account: 'chase checking' }]);
+    }
+    generate.mockResolvedValueOnce(debit('chase'));
+    await expect(prepareMlp('把我chase里记录一笔debit消费12', [chase, { ...chase, id: crypto.randomUUID(), name: 'chase savings' }])).rejects.toThrow('Several accounts match chase');
     generate.mockResolvedValueOnce(JSON.stringify({ result: { intent: 'multi', steps: [step, { ...step, name: 'Bank' }] } }));
     await expect(prepareMlp('create Cash and Bank', [])).rejects.toMatchObject({ stage: 'format' });
     // Optional prose and reward programs are kept only when the request states them; invented values are dropped, not saved.
@@ -38,6 +47,18 @@ describe('frozen protocol evidence', () => {
     expect([stated.actions[0], stated.steps[1].arguments]).toMatchObject([{ reward_currency: 'MR' }, { memo: '午饭' }]);
     generate.mockClear();
   });
+  it('every regression fixture is achievable by a perfect answer', async () => {
+    const intents: Record<string, string> = { create_account: 'create', expense: 'spend', transfer: 'transfer' };
+    for (const fixture of HARNESS_CASES.filter(x => x.expected.outcome === 'success' || (x.expected.outcome === 'reject' && x.expected.error !== 'Insufficient balance'))) {
+      const steps: Array<Record<string, unknown>> = fixture.plan!.map(({ amount, ...step }) => step.action === 'transfer' && amount === 'all' ? { ...step, action: 'transfer_all' } : { ...step, amount });
+      generate.mockResolvedValueOnce(JSON.stringify({ result: { intent: new Set(steps.map(step => String(step.action).replace('_all', ''))).size > 1 ? 'multi' : intents[String(fixture.plan![0].action)], steps } }));
+      const accounts = fixture.seed.map((account, index) => ({ id: crypto.randomUUID(), name: account.name!, type: account.type, currency: account.currency, index }));
+      const prepared = prepareMlp(fixture.text, accounts);
+      if (fixture.expected.outcome === 'success') await expect(prepared, fixture.id).resolves.toMatchObject({ actions: fixture.plan!.map(step => ({ action: step.action })) });
+      else await expect(prepared, fixture.id).rejects.toThrow(fixture.expected.error);
+    }
+    generate.mockClear();
+  });
   it('rejects observed malformed outputs without repair and preserves both fixture inventories', async () => {
     const corpus = JSON.parse(await readFile(new URL('../eval/fixtures/observed-format.json', import.meta.url), 'utf8'));
     for (const fixture of corpus) {
@@ -45,10 +66,10 @@ describe('frozen protocol evidence', () => {
       await expect(prepareMlp(fixture.text, fixture.accounts.map((a: object, i: number) => ({ ...a, id: `account-${i}` }))))
         .rejects.toMatchObject({ stage: fixture.expectedStage, output: fixture.raw });
     }
-    const fixture = HARNESS_CASES.find(x => x.id === 'natural-spend-en')!;
-    const invalid = [{ action: 'expense' as const, account: 'Test Wallet', amount: 17, currency: 'EUR' as const }];
+    const fixture = HARNESS_CASES.find(x => x.id === 'spend-asset-en-1')!;
+    const invalid = [{ action: 'expense' as const, account: 'Cash Wallet', amount: 14, currency: 'EUR' as const }];
     generate.mockResolvedValueOnce(JSON.stringify({ result: { intent: 'spend', steps: invalid } }));
-    await expect(prepareMlp(fixture.text, [{ id: crypto.randomUUID(), name: 'Test Wallet', type: AccountType.ASSET, currency: 'USD' }]))
+    await expect(prepareMlp(fixture.text, [{ id: crypto.randomUUID(), name: 'Cash Wallet', type: AccountType.ASSET, currency: 'USD' }]))
       .rejects.toMatchObject({ stage: 'validation' });
     expect(planOutcomeMatches(fixture, undefined, invalid, new AbortController().signal)).toBe(false);
     expect(generate).toHaveBeenCalledTimes(corpus.length + 1);

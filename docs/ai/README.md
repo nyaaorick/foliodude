@@ -38,9 +38,9 @@ Edge/Firefox paths; `FOLIO_AI_BROWSER_PATH` overrides the real-model runner path
 | `npm run ai:verify -- --ui-repeat 2` | Typecheck, full test suite, both builds, fresh-profile PWA/installed Firefox UI twice |
 | `npm run ai:ui` | Fixed-output PWA UI on an owned test Vite server, port 4180 |
 | `npm run ai:ui -- --firefox` | Installed production extension UI; requires `npm run build:firefox` first |
-| `npm run ai:smoke` | Three real Edge cases, seed 20261012; diagnostic subset, never an acceptance pass |
-| `npm run ai:eval -- --full` | Sequential Edge/Firefox 46-case regression ×3 and 100-case holdout ×1; keep lid open |
-| `npm run harness:ai -- --help` | Individual browser/suite/seed/repeat/case/model-folder selection |
+| `npm run ai:smoke` | Three real Edge cases (amount transfer, partial-name match, spend then move the rest); diagnostic subset, never an acceptance pass |
+| `npm run ai:eval -- --full` | Sequential Edge/Firefox 57-case regression ×3 and 100-case holdout ×1; keep lid open |
+| `npm run harness:ai -- --help` | Individual browser/suite/repeat/case/model-folder selection |
 | `npm run harness:ai -- --remote …` | Same pipeline against the remote endpoint in the gitignored root `config.json` (see Remote evaluation) |
 | `npm run ai:report -- results --baseline --verification FILE` | Frozen four-suite report plus actual application verification |
 | `npm run ai:report -- diagnose` | Offline classification of all 476 frozen baseline records; writes a new diagnostic report |
@@ -135,7 +135,11 @@ Every request follows Describe → Review → Save → Receipt. Openings default
 ASSET/USD/0. A card, charge card, or card brand/issuer named as the account (Amex,
 Visa) opens a LIABILITY; a bank account (chase checking) stays ASSET. Debt is a
 negative liability balance with no transaction. Expenses and
-transfers never implicitly create accounts. Missing information asks for clarification.
+transfers never implicitly create accounts. An existing account may be named by a part
+of its name that only it has ("把我chase里记录一笔debit消费" uses chase checking; Latin parts
+are whole words, Chinese parts substrings); the draft carries the full name, and a
+part shared by several accounts is rejected. New account names must still appear
+verbatim. Missing information asks for clarification.
 `"all"` resolves the locked remaining source balance after preceding steps. Cross-
 currency transfers require an explicit received amount. Edit fields before saving;
 editing the original request invalidates its draft. Changed accounts require refreshed
@@ -247,34 +251,47 @@ express date patterns.
 
 ## Fixture expectations
 
-Expectations live only in code: outcomes in `eval/cases.ts`, `eval/natural-cases.ts`
-and `eval/holdout-cases.ts`; exact plans in `eval/expected-plans.ts`; scoring in
-`planOutcomeMatches` there. The rules they encode:
+The regression set (`eval/cases.ts`, manifest version 2) is 57 explicit bilingual
+cases weighted to everyday use, each with its exact plan; end balances are derived
+from the seed and plan (`settle`), never hand-computed. Chinese cases use CNH accounts.
+
+| Group | Cases | Covers |
+|---|---:|---|
+| `transfer-*` | 15 | stated amounts (decimals, `1,000`), pronouns, card repayment, everything (`transfer_all`), currency conversion with the received amount |
+| `create-*` | 14 | assets, cards and card brands, opening debt, credit limits, EUR/HKD/CNH, several at once |
+| `spend-*` | 8 | asset and card spending, stated memos |
+| `match-*` | 7 | existing accounts named by part of their name (`chase` → chase checking, 招商 → 招商银行, 信用卡 → 招行信用卡), case-insensitive names, ambiguous parts |
+| `multi-*` | 6 | steps that depend on earlier ones (create then spend/fund, spend then move the rest, two transfers) |
+| `edge-*` | 7 | a question, a negation, missing amount or destination, a missing account, rollback, cancellation |
+
+The holdout (`eval/holdout-cases.ts`, 100 cases) is unchanged. Its wording stays out
+of prompts and tuning. A test feeds every regression plan through the pipeline as a
+perfect answer: each `success` case must produce a draft and each rejected case must
+fail with its named error, so no fixture is unpassable. The rules the cases encode
+(scoring is `planOutcomeMatches` in `eval/expected-plans.ts`):
 
 - `success`: a validated draft whose steps and operational parameters match exactly
   (unrequested optional memo/category/date are not scored).
 - `no_action`: the model must answer `none`. A clarification instead is a failure.
 - `clarification`: the model must answer `ask`.
 - `reject`: the model must faithfully extract the stated plan, and host validation
-  must reject it with the named error (`Account already exists`, `Account not found`).
-  Answering `none` or `ask` instead is a failure.
+  must reject it with the named error (`Several accounts match`, `Account not found`,
+  `Insufficient balance` at save). Answering `none` or `ask` instead is a failure.
 - `cancel`: a host-contract check that abort reaches the request.
-- Card brands/issuers open as LIABILITY (`default-opening`, `opening-synonym`,
-  `opening-duplicate`).
+- Card brands/issuers open as LIABILITY; a bank account stays ASSET.
+- An existing account named by a part of its name that only it has is that account;
+  it is never re-created. A part shared by several accounts is rejected.
 
-Open questions, not yet decided: whether `ask` may substitute for `none` on how-to
-questions (`opening-inquiry`); whether `none`/`ask` may substitute for `reject` when
-the account exists or is missing (`opening-duplicate`, `missing-account`); and
-whether a type prefix such as 现金账户 is stripped from the name (`after-cancel`;
-the prompt only names generic suffixes).
+Still undecided: whether `ask` may substitute for `none` on how-to questions, and
+whether `none`/`ask` may substitute for `reject` when an account is missing.
 
 ## Findings and proposals
 
 Recognition gates remain failed and the UI remains Experimental. Latest complete
 local evaluation (C+B+A, before the review fixes): Edge regression 65/138, Firefox
 62/138, Edge holdout 48/100, Firefox holdout 50/100; 14 of 20 critical cases fail in
-both browsers. Single Edge regression repetitions since then, with fixtures before
-the card-brand change: review fixes 25/46; transfer split 18/46 (the local model
+both browsers. Single Edge regression repetitions since then, on the previous 46-case
+fixture set: review fixes 25/46; transfer split 18/46 (the local model
 wrote `transfer` with amount 0); remote `gpt-oss-120b` on the same pipeline 40/46.
 The remote result shows the pipeline is not the main limit. The
 [failure audit and experiments](audit.md) records every step. Development fixture

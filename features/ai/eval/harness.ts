@@ -9,14 +9,13 @@ import { MlpError, observeMlp, type MlpAction, type MlpMeasurement } from '@/fea
 import { HARNESS_CASES } from '@/features/ai/eval/cases';
 import { holdoutCases } from '@/features/ai/eval/holdout-cases';
 import { expectedPlan, planOutcomeMatches } from '@/features/ai/eval/expected-plans';
-import { NATURAL_SEED } from '@/features/ai/eval/natural-cases';
 import { observeAiText, type AiTextMeasurement } from '@/features/ai/providers/text-client';
 
 /** A remote Responses endpoint runs the same pipeline; requests are paced to its token rate limit, never retried. */
 interface RemoteOptions { baseUrl: string; model: string; apiKey: string; tokensPerMinute: number }
 interface RunOptions { folder: boolean; mode: 'ledger' | 'extraction'; suite: 'regression' | 'holdout'; cases?: string[]; remote?: RemoteOptions }
 type HarnessModel = LocalModelConfig | { kind: 'remote'; baseUrl: string; modelId: string };
-const state: { evaluationSeed: number; phase: string; done: boolean; fatal?: string; results: Array<Record<string, unknown>>; model?: HarnessModel; loadMs?: number } = { evaluationSeed: NATURAL_SEED, phase: 'idle', done: false, results: [] };
+const state: { phase: string; done: boolean; fatal?: string; results: Array<Record<string, unknown>>; model?: HarnessModel; loadMs?: number } = { phase: 'idle', done: false, results: [] };
 const show = () => { document.querySelector('#status')!.textContent = JSON.stringify({ ...state, results: state.results.map(r => ({ id: r.id, passed: r.passed, structured: r.structured, ms: r.ms, error: r.error })) }, null, 2); };
 async function snapshot() {
   const db = await getDb();

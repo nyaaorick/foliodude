@@ -350,3 +350,13 @@ natural-all-en-2/3, natural-all-zh-1/2/3, natural-user-all, natural-zero.
 Cost: `transfer-without-amount` (no amount stated; expected: ask) now becomes a
 transfer-all draft, and the harness saved it in ledger mode. In the app it still
 requires Review → Save. It already failed before the change, as a format error.
+
+### Regression set v2 and partial-name matching (2026-10-16)
+
+The 46-case set was a third edge cases, had one stated-amount transfer and no
+partial-name matching. It was replaced by 57 explicit cases weighted to everyday use
+(manifest version 2; see the README's fixture expectations). Earlier results above
+are on the old set and are not comparable. An existing account may now be named by a
+part only it has (`chase` → chase checking); the draft carries the full name, and
+grounding accepts a distinctive part. Card brands open as LIABILITY. A 0 transfer
+reads as `transfer_all`. The seed parameter was removed with the seeded generator.

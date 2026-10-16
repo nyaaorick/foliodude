@@ -129,12 +129,12 @@ export function normalizeMlp(actions: unknown, accounts: MlpAccount[], today = l
   const source = text === undefined ? '' : normalizeName(text);
   // Latin letters and digits need a word boundary, so a short id such as MR is not found inside another word;
   // CJK text has no word spaces and matches as a substring.
-  const states = (spelling: string) => {
-    const wanted = normalizeName(spelling);
-    for (let at = source.indexOf(wanted); wanted && at >= 0; at = source.indexOf(wanted, at + 1))
-      if (!/[a-z0-9]/.test(source[at - 1] ?? '') && !/[a-z0-9]/.test(source[at + wanted.length] ?? '')) return true;
+  const within = (haystack: string, wanted: string) => {
+    for (let at = haystack.indexOf(wanted); wanted && at >= 0; at = haystack.indexOf(wanted, at + 1))
+      if (!/[a-z0-9]/.test(haystack[at - 1] ?? '') && !/[a-z0-9]/.test(haystack[at + wanted.length] ?? '')) return true;
     return false;
   };
+  const states = (spelling: string) => within(source, normalizeName(spelling));
   // Drop unstated optional prose before mapping, so review and save never see an invented value. User edits keep theirs.
   const selected = z.array(MlpActionSchema).max(MLP_LIMITS.steps).parse(actions).map(action => text === undefined ? action : Object.fromEntries(Object.entries(action).flatMap(([key, value]) => {
     const spellings = typeof value === 'string' ? STATED_FIELDS[key]?.(value) : undefined;
@@ -143,19 +143,36 @@ export function normalizeMlp(actions: unknown, accounts: MlpAccount[], today = l
   })) as MlpAction);
   const numbers = new Set(((text ?? '').match(/-?\d+(?:,\d{3})*(?:\.\d+)?/g) ?? []).map(number => Math.abs(Number(number.replaceAll(',', '')))));
   const available = [...eligible]; const steps: MlpStep[] = [];
-  for (const [index, action] of selected.entries()) {
+  // An existing account may be named by part of its name ("chase" for "chase checking"), if only that account has the part.
+  const parts = (name: string) => { const whole = normalizeName(name), found = new Set<string>();
+    for (let start = 0; start < whole.length; start++) for (let end = start + 2; end <= whole.length; end++) {
+      const part = whole.slice(start, end).trim(); if (part.length >= 2 && within(whole, part)) found.add(part); }
+    return [...found]; };
+  const owners = (part: string) => available.filter(account => within(normalizeName(account.name), part));
+  const canonical = (name: unknown, currency?: unknown) => {
+    if (typeof name !== 'string' || available.some(account => normalizeName(account.name) === normalizeName(name))) return name;
+    const matches = owners(normalizeName(name)).filter(account => !currency || account.currency === currency);
+    return matches.length === 1 ? matches[0].name : name;
+  };
+  for (const [index, given] of selected.entries()) {
+    const action = { ...given } as MlpAction & Record<string, unknown>;
+    for (const [key, currency] of [['account', 'currency'], ['from', 'fromCurrency'], ['to', 'toCurrency']] as const)
+      if (key in action) action[key] = canonical(action[key], action[currency]);
+    selected[index] = action;
     const tool = ACTION_REGISTRY[action.action];
     const reason = tool.availability(available, steps.some(step => step.name === 'create_account'));
     if (reason) throw Error(reason);
     const grounded = (name: string) => { if (text !== undefined && !source.includes(normalizeName(name))) throw Error(`Account name must remain verbatim: ${name}`); };
+    // An existing account is grounded by its name or by a part of it that no other account has.
+    const mentioned = (name: string) => { if (text !== undefined && !source.includes(normalizeName(name)) && !parts(name).some(part => within(source, part) && owners(part).length === 1)) throw Error(`Account name must remain verbatim: ${name}`); };
     const { action: name, ...value } = action;
     const arguments_ = tool.map(value, {
       today,
       money(value) { if (text !== undefined && value !== 0 && !numbers.has(Math.abs(value))) throw Error('The extracted amount was not provided in the request. Use numeric amounts.'); return value; },
       resolve(name, currency?: CurrencyId) {
         const matches = available.filter(account => normalizeName(account.name) === normalizeName(name) && (!currency || account.currency === currency));
-        grounded(name);
-        if (matches.length !== 1) throw Error(matches.length ? `Several accounts match ${name}; use a unique account name.` : `Account not found: ${name}. Create it explicitly first.`);
+        mentioned(name);
+        if (matches.length !== 1) throw Error(matches.length || owners(normalizeName(name)).length > 1 ? `Several accounts match ${name}; use a unique account name.` : `Account not found: ${name}. Create it explicitly first.`);
         return matches[0];
       },
       create(name) {
