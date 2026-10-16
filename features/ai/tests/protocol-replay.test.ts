@@ -20,6 +20,10 @@ describe('frozen protocol evidence', () => {
     await expect(prepareMlp('create Cash', [])).rejects.toMatchObject({ stage: 'format' });
     generate.mockResolvedValueOnce(JSON.stringify({ result: { intent: 'ask', clarification: '' } }));
     await expect(prepareMlp('create Cash', [])).rejects.toMatchObject({ stage: 'format' });
+    // A transfer of 0 (the local decoder cannot exclude it) is read as transfer_all, and a received amount of 0 as unstated.
+    const accounts = [{ id: crypto.randomUUID(), name: 'Cash', type: AccountType.ASSET, currency: 'USD' as const }, { id: crypto.randomUUID(), name: 'Bank', type: AccountType.ASSET, currency: 'USD' as const }];
+    generate.mockResolvedValueOnce(JSON.stringify({ result: { intent: 'transfer', steps: [{ action: 'transfer', from: 'Cash', to: 'Bank', amount: 0, fromCurrency: 'USD', toCurrency: 'USD', targetAmount: 0, memo: '' }] } }));
+    expect((await prepareMlp('move everything from Cash to Bank', accounts)).actions).toMatchObject([{ action: 'transfer', amount: 'all' }]);
     generate.mockResolvedValueOnce(JSON.stringify({ result: { intent: 'multi', steps: [step, { ...step, name: 'Bank' }] } }));
     await expect(prepareMlp('create Cash and Bank', [])).rejects.toMatchObject({ stage: 'format' });
     // Optional prose and reward programs are kept only when the request states them; invented values are dropped, not saved.

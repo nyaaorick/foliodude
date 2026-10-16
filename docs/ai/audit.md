@@ -338,3 +338,15 @@ dropped from the wire (meanings are in the instructions). Schema 7523 → 3772
 characters. Groq, same request: 2489 → 1656 input tokens (instructions and request
 alone: 582), identical output. Local Edge regression ×1: 18 → 18 plans, 44/46
 byte-identical outputs (the other two fail either way), p50 3644 → 3654 ms.
+
+### Zero amounts read as transfer_all (local Edge regression ×1)
+
+The local decoder cannot exclude 0, and after the transfer split the local model wrote
+`transfer` with `amount: 0` and `targetAmount: 0` instead of `transfer_all`. `fromWire`
+now reads a transfer amount of 0 as `transfer_all` and a received amount of 0 as
+unstated. 18 → 25/46. Format failures 10 → 0. transfer-all 0/7 → 6/7. Newly passing:
+natural-all-en-2/3, natural-all-zh-1/2/3, natural-user-all, natural-zero.
+
+Cost: `transfer-without-amount` (no amount stated; expected: ask) now becomes a
+transfer-all draft, and the harness saved it in ledger mode. In the app it still
+requires Review → Save. It already failed before the change, as a format error.

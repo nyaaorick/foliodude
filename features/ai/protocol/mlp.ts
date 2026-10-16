@@ -48,7 +48,15 @@ function fromWire(raw: string): MlpOutput {
   try { value = JSON.parse(raw); }
   catch { throw Error(`Invalid AI plan JSON: ${raw}`); }
   const wire = (value as { result?: { steps?: unknown } } | null)?.result;
-  if (Array.isArray(wire?.steps)) wire.steps = wire.steps.map(step => withoutOptionalNulls(step,
+  // The local decoder cannot exclude 0, so the local model writes 0 for amounts it does not know. A transfer of 0 is
+  // read as transfer_all, and a received amount of 0 as unstated. Review shows "Entire remaining balance" and Save
+  // still needs explicit confirmation.
+  const zeroAsAll = (step: unknown) => {
+    const { amount, targetAmount, ...rest } = step as { action?: unknown; amount?: unknown; targetAmount?: unknown };
+    if (rest.action !== 'transfer' && rest.action !== 'transfer_all') return step;
+    return { ...rest, ...(amount === 0 ? { action: 'transfer_all' } : amount === undefined ? {} : { amount }), targetAmount: targetAmount === 0 ? null : targetAmount };
+  };
+  if (Array.isArray(wire?.steps)) wire.steps = wire.steps.map(zeroAsAll).map(step => withoutOptionalNulls(step,
     VIEWS.find(view => view.name === (step as { action?: unknown })?.action)?.schema.shape ?? {}));
   const result = MlpWireSchema.parse(value).result as { intent: string; clarification?: string; steps?: PlannerStep[] };
   if (result.intent === 'ask') return { clarification: result.clarification! };
