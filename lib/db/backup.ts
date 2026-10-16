@@ -4,7 +4,7 @@ import { LATEST_SCHEMA_VERSION } from './migrate';
 import { rows } from './sql';
 
 /**
- * Logical snapshot of the user's ledger, for Google Drive sync (PLAN.md §5
+ * Logical snapshot of the user's ledger, for Google Drive sync (docs/PLAN.md §5
  * Phase 4).
  *
  * **Logical, not `dumpDataDir()`.** A raw data-directory dump would be simpler,

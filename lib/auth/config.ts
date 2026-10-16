@@ -1,7 +1,7 @@
 /**
  * Google OAuth client ids.
  *
- * A client id is the one credential this app may ship (PLAN.md §1): Google's
+ * A client id is the one credential this app may ship (docs/PLAN.md §1): Google's
  * PKCE flow for public clients has no client secret, so there is nothing to
  * protect. It still is not hard-coded — it differs per person running this
  * project — so it comes from the build environment, and the app degrades

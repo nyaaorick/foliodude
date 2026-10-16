@@ -9,7 +9,7 @@ import { claimWriter, clearWriter, getWriter, isWritable, observeWriter } from '
 /**
  * Snapshot sync against the user's own Google Drive.
  *
- * Whole-file, last-write-wins, single-writer — see PLAN.md §5 Phase 4 for why
+ * Whole-file, last-write-wins, single-writer — see docs/PLAN.md §5 Phase 4 for why
  * per-row change-log sync is out of scope. The engine never merges: it either
  * uploads this device's ledger or replaces it with the remote one, and the
  * writer designation is what makes that safe.

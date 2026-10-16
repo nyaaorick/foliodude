@@ -4,7 +4,7 @@
  * `localStorage`, deliberately — never the PGlite database. The database is the
  * thing uploaded to Drive, so a token stored there would be synced to every
  * other device, which is exactly what a per-device credential must not do. Same
- * reasoning as the `apikey:` exclusion in PLAN.md §7.
+ * reasoning as the `apikey:` exclusion in docs/PLAN.md §7.
  */
 const SESSION_KEY = 'foliodude:google-session';
 

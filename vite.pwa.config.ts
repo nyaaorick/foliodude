@@ -21,7 +21,7 @@ import type { Plugin } from 'vite';
  * content-hashes filenames. Reading the bundle instead means the shell is
  * always precached in full — which is what makes the app open offline on iOS,
  * where an app-shell precache is the only offline mechanism available
- * (PLAN.md §5 Phase 3).
+ * (docs/PLAN.md §5 Phase 3).
  */
 function serviceWorker(): Plugin {
   return {

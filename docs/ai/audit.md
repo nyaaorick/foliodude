@@ -46,11 +46,11 @@ The bullets below describe the frozen 0.1.3 baseline. The 0.1.4 native-JSON
 contract is in the [module README](../README.md#native-json-output-everything-webgpu-014),
 and its measured results are under "Native JSON Schema output" below.
 
-- [MLP](../protocol/mlp.ts) puts behavior in `instructions`, request/account context
+- [MLP](../../features/ai/protocol/mlp.ts) puts behavior in `instructions`, request/account context
   in `input`, exposes all three permitted registry actions, and performs one call.
   It strips only an empty leading think block or a whole JSON fence. It does not
   extract JSON from trailing prose or perform a repair call.
-- [Text client](../providers/text-client.ts) sends `temperature:0`,
+- [Text client](../../features/ai/providers/text-client.ts) sends `temperature:0`,
   `max_output_tokens:2048`, `store:false` to both Responses backends. Remote SDK
   retries are disabled. Local/remote selection has no silent fallback.
 - Installed `everything-webgpu/src/engine/responses.js` prepends `instructions`

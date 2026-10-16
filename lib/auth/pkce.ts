@@ -3,7 +3,7 @@
  *
  * PKCE is what lets a public client — a browser extension or a static PWA —
  * complete an authorization code flow with no client secret, which is the whole
- * reason Phase 4 needs no server of ours. See PLAN.md §1 and §5 Phase 4.
+ * reason Phase 4 needs no server of ours. See docs/PLAN.md §1 and §5 Phase 4.
  */
 
 function base64Url(bytes: Uint8Array): string {

@@ -2,7 +2,7 @@ import { PGlite } from '@electric-sql/pglite';
 
 import { assertSchemaNotAhead, runMigrations } from './migrate';
 
-/** IndexedDB is the only driver Safari supports; see PLAN.md §2. */
+/** IndexedDB is the only driver Safari supports; see docs/PLAN.md §2. */
 const DATA_DIR = 'idb://foliodude';
 
 /**

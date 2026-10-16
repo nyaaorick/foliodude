@@ -1,5 +1,5 @@
 /**
- * Stable per-device identity, used by the single-writer model (PLAN.md §5
+ * Stable per-device identity, used by the single-writer model (docs/PLAN.md §5
  * Phase 4) to tell "this device wrote the snapshot" from "another device did".
  *
  * `localStorage` rather than the database: the database is the thing being

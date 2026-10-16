@@ -3,7 +3,7 @@ import { getAccessToken } from '@/lib/auth/google';
 /**
  * Google Drive `appDataFolder` access, called directly from the client.
  *
- * No upload server and no storage bucket to provision (PLAN.md §5 Phase 4) —
+ * No upload server and no storage bucket to provision (docs/PLAN.md §5 Phase 4) —
  * the file lives in the user's own Drive, in a folder Drive's normal UI does
  * not show, and only this app's OAuth client can reach it.
  *

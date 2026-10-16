@@ -4,7 +4,7 @@ import { maybeOne } from './sql';
 /**
  * Bring-your-own-key API credentials, stored in `device_secrets` (001_init.sql).
  * Nothing ships with a value — every row is something this user typed into
- * Settings on this device. See PLAN.md §1 (Standing Constraint: No Shipped
+ * Settings on this device. See docs/PLAN.md §1 (Standing Constraint: No Shipped
  * Credentials) and §7 (Paused Features).
  *
  * The table is excluded from snapshot sync by construction (lib/db/backup.ts

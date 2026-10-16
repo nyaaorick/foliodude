@@ -25,7 +25,7 @@ still there offline.
 - **Multi-currency, multi-account by design** — assets, liabilities, airline
   miles, and brokerage positions are first-class account types, not bolted on.
 
-See [PLAN.md](PLAN.md) for the full architecture, the migration plan off the
+See [docs/PLAN.md](docs/PLAN.md) for the full architecture, the migration plan off the
 original Next.js/Supabase stack, and the reasoning behind each design
 decision.
 
@@ -58,7 +58,7 @@ Open the sidebar in Firefox with `Ctrl/Cmd+B`, or View → Sidebar → FolioDude
 For iOS, serve `.output/pwa` over HTTPS/LAN and use Share → Add to Home Screen.
 
 Optional API keys (FX rates, share prices, AI-assisted entry) are entered by
-the user on the Lab page and stored only in the local database — see PLAN.md §1
+the user on the Lab page and stored only in the local database — see docs/PLAN.md §1
 and §7. Nothing needs to be configured to run the app.
 
 ## Layout
@@ -117,17 +117,17 @@ the others are read-only until promoted on the Sync page.
 FolioDude is pre-release, so nothing here is kept for backward compatibility:
 schema fixes are made in the migration that introduced them, legacy code is
 deleted rather than quarantined, and a stale development database is wiped
-rather than migrated. The working rules are in [PLAN.md](PLAN.md) §9 and, in
+rather than migrated. The working rules are in [docs/PLAN.md](docs/PLAN.md) §9 and, in
 operational form for coding agents, in
 [.claude/skills/foliodude-workflow/SKILL.md](.claude/skills/foliodude-workflow/SKILL.md).
 
 Full roadmap, open risks, and design rationale for each phase live in
-[PLAN.md](PLAN.md).
+[docs/PLAN.md](docs/PLAN.md). All project documentation is under [docs/](docs/).
 
 ## AI intent entry
 
 The AI module, protocol, providers, runtime, UI and repeatable tests live in
-[`features/ai`](features/ai/README.md). Start there for the architecture, failure
+[`features/ai`](features/ai); its guide is [docs/ai/README.md](docs/ai/README.md). Start there for the architecture, failure
 audit, evaluation commands and solution proposals. Intent entry uses explicit
 preview/edit/Save; current local-model accuracy gates remain failed and the
 feature is Experimental.

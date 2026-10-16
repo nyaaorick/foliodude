@@ -10,7 +10,7 @@ import { useEffect, useRef, useState } from 'react';
  * ones in a full tab. Measuring the container instead keeps text, ticks, and
  * stroke widths at a fixed physical size at every width.
  *
- * See PLAN.md §8 risk #7 for why this replaced Recharts.
+ * See docs/PLAN.md §8 risk #7 for why this replaced Recharts.
  */
 function useContainerWidth() {
   const ref = useRef<HTMLDivElement>(null);

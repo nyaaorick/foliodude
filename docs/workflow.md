@@ -1,0 +1,1 @@
+../.claude/skills/foliodude-workflow/SKILL.md

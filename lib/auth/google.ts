@@ -13,7 +13,7 @@ import { clearSession, isExpired, loadSession, saveSession, type GoogleSession }
  * Google sign-in, Authorization Code + PKCE, no client secret and no server.
  *
  * Two flows behind one API, because the targets differ in how they can receive
- * a redirect (PLAN.md §5 Phase 4):
+ * a redirect (docs/PLAN.md §5 Phase 4):
  *
  * - **Extension** — `identity.launchWebAuthFlow()` opens the consent screen and
  *   hands back the redirect URL directly, so the whole exchange happens inside

@@ -2,7 +2,7 @@ import { getDeviceId, getDeviceName } from './device';
 import { deviceStore } from './storage';
 
 /**
- * Single-writer designation (PLAN.md §5 Phase 4).
+ * Single-writer designation (docs/PLAN.md §5 Phase 4).
  *
  * Whole-file snapshot sync is last-write-wins, so two devices editing between
  * syncs means one side's work is destroyed silently. Rather than pretend
@@ -54,7 +54,7 @@ export function getWriter(): WriterInfo | null {
  * Fails open: a device that has never synced is writable.
  *
  * That is the offline-first case and by far the common one — a signed-out user
- * must have a fully working app (PLAN.md §1). Read-only is only ever entered
+ * must have a fully working app (docs/PLAN.md §1). Read-only is only ever entered
  * after actually observing a snapshot written by a different device.
  */
 export function isWritable(): boolean {

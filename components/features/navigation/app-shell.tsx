@@ -15,7 +15,7 @@ interface NavItem {
  * Five items — the ceiling for a thumb-zone bar. At 350px (the Firefox sidebar,
  * the narrowest target) that is 70px per tab, still above the 44px minimum.
  *
- * PLAN.md §3.2 lists four, matching the routes that existed when it was
+ * docs/PLAN.md §3.2 lists four, matching the routes that existed when it was
  * written, and says to revise the tabs and routes together. Phase 4 added
  * `/sync`, so this is that revision.
  */

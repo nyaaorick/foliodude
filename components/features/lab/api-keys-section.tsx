@@ -97,7 +97,7 @@ function ProviderForm({ status }: { status: Omit<ApiKeyStatus, 'provider'> & { p
   );
 }
 
-/** Where the user enters every bring-your-own-key credential (PLAN.md §1). */
+/** Where the user enters every bring-your-own-key credential (docs/PLAN.md §1). */
 export function ApiKeysSection() {
   const state = useLiveQuery(listApiKeyStatus);
 

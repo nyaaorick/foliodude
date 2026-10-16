@@ -17,7 +17,7 @@ export interface SessionContext {
 }
 
 /**
- * The single choke point for the single-writer model (PLAN.md §5 Phase 4):
+ * The single choke point for the single-writer model (docs/PLAN.md §5 Phase 4):
  * every ledger mutation in `lib/actions` runs inside `db.transaction()`, so
  * refusing to open one on a read-only device blocks them all, including the
  * reward/mileage rate and rule edits. Reads go through `db.query` and are

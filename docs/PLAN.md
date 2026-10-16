@@ -495,5 +495,5 @@ described as unverified.
 - [x] Typecheck, 152 tests, both builds and two consecutive UI runs per surface pass (52 checks). Bounded real Edge smoke: 3/3, not an accuracy acceptance run.
 - [ ] Recognition recovery remains unachieved; retain Experimental and unchanged 95%/90% gates.
 
-Module guide: `features/ai/README.md`. Evidence and solutions: `features/ai/docs/audit.md`.
-Historical AI integration checkpoints remain in Git; maintained usage is in `features/ai/README.md`.
+Module guide: `docs/ai/README.md`. Evidence and solutions: `docs/ai/audit.md`.
+Historical AI integration checkpoints remain in Git; maintained usage is in `docs/ai/README.md`.

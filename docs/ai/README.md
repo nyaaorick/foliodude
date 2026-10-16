@@ -1,7 +1,8 @@
 # AI intent module
 
-All AI-owned application code, protocol/registry, providers, runtime, UI, tests,
-evaluation fixtures and documentation live here. Lab and the shared API-key
+All AI-owned application code, protocol/registry, providers, runtime, UI, tests and
+evaluation fixtures live in [`features/ai/`](../../features/ai); its documentation is
+here in `docs/ai/`. Code paths below are relative to `features/ai/`. Lab and the shared API-key
 section assemble this module. Shared ledger actions, PGlite/SQL, secret storage,
 sync permissions and general UI remain in their existing modules.
 
@@ -209,6 +210,6 @@ decoder cannot express date patterns.
 Recognition gates remain failed and the UI remains Experimental. Native JSON (0.1.4)
 removed syntax/envelope failures, but those cases became semantic failures; regression
 accuracy is unchanged (Edge 30/138, Firefox 33/138) and the partial holdout regressed. The
-[failure audit and prioritized experiments](docs/audit.md) records the frozen
+[failure audit and prioritized experiments](audit.md) records the frozen
 baseline, observed failures and remaining model/runtime hypotheses. Development
 fixture wording may guide experiments; holdout wording must remain excluded.

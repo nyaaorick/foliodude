@@ -41,7 +41,7 @@ async function fetchUsdBaseRates(apiKey: string): Promise<Record<string, number>
  *
  * `apiKey` is a value the user typed into Settings (see lib/db/settings.ts) —
  * this module never reads an environment variable or ships a shared key
- * (PLAN.md §1). With no key configured, every requested currency falls back to
+ * (docs/PLAN.md §1). With no key configured, every requested currency falls back to
  * 1:1 against USD; the caller is responsible for surfacing that as a staleness
  * warning rather than presenting it as a real rate.
  */

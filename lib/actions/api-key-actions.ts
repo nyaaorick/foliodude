@@ -32,7 +32,7 @@ export interface ApiKeyStatus {
 /**
  * Store a user-supplied API key on this device.
  *
- * Nothing ships with a key (PLAN.md §1); this is the only way one enters the
+ * Nothing ships with a key (docs/PLAN.md §1); this is the only way one enters the
  * database. `device_secrets` is not part of the Phase 4 snapshot, so a key never
  * leaves the device even once cloud sync exists.
  */

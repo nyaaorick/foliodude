@@ -55,7 +55,7 @@ async function fetchFinnhubQuote(ticker: string, apiKey: string): Promise<number
  *
  * `apiKey` is a value the user typed into Settings (see lib/db/settings.ts) —
  * this module never reads an environment variable or ships a shared key
- * (PLAN.md §1). With no key configured this throws rather than silently
+ * (docs/PLAN.md §1). With no key configured this throws rather than silently
  * returning nothing, since a share account with a stale price is a valuation
  * error the caller must surface, not swallow.
  */
