@@ -360,3 +360,13 @@ are on the old set and are not comparable. An existing account may now be named 
 part only it has (`chase` → chase checking); the draft carries the full name, and
 grounding accepts a distinctive part. Card brands open as LIABILITY. A 0 transfer
 reads as `transfer_all`. The seed parameter was removed with the seeded generator.
+
+First local Edge regression ×1 on set v2: 35/57 plans, 13/20 critical, 0 format and
+0 preparation writes, p50 6653 ms. By group: transfer 13/15, create 8/14, spend 7/8,
+match 4/7, multi 0/6, edge 3/7. The dominant failure is stopping after the first
+step: create-several, multi-create-spend and multi-three each kept only their first
+step. Others: card/asset type swaps (BoA Checking as LIABILITY, Chase Sapphire as
+ASSET), re-creating an existing account instead of using it (spend-memo-en,
+match-part-zh, multi-repay-spend-en), and the received amount used as the sent amount
+(transfer-cross-en). After this run, multi-two-transfers-zh was made unambiguous; its
+second source was unstated, and the model's reading was valid.
