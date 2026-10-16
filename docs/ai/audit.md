@@ -387,3 +387,11 @@ In both variants `multi-three-en` still stopped after its first step, so the loc
 not why multi-step plans end early; the local model ends after one step. The
 action-named first token matters: an abstract `plan` label collapsed the model onto
 ask/none. B stays.
+
+### Remote on the core suite (Groq gpt-oss-120b, 2026-10-16)
+
+Same pipeline, B wire, two runs: 10/10 both times, core gate passed (after the
+case-order fix in `475d743`). p50 2.1 s, about 20K tokens per run. The local model
+scores 5/10 on the same cases, so the remaining failures are local-model limits:
+multi-step plans, card-repayment direction, creating instead of using an existing
+account, the ask-example leak, and amount 0 for a missing amount.
