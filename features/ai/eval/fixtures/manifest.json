@@ -1,5 +1,17 @@
 {
-  "version": 2,
+  "version": 3,
+  "coreIds": [
+    "transfer-amount-zh-1",
+    "transfer-all-en-1",
+    "transfer-repay-zh",
+    "transfer-cross-en",
+    "create-asset-zh-1",
+    "create-card-en-2",
+    "spend-card-zh",
+    "match-part-zh",
+    "multi-three-en",
+    "edge-ask-amount-en"
+  ],
   "regressionIds": [
     "transfer-amount-en-1",
     "transfer-amount-en-2",

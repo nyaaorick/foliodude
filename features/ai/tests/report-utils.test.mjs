@@ -39,6 +39,12 @@ describe('evaluation acceptance',()=>{
     expect(summarizeReport(wrongDraft).summary.plansPassed).toBe(27);
     expect(summarizeReport(wrongDraft).summary.ledgersPassed).toBe(28);
     expect(summarizeReport(current).acceptance.coverageComplete).toBe(true);
+    // Core: one repetition of the core ids, and every case must pass.
+    const core = structuredClone(current); core.suite = 'core'; core.runs = [core.runs[0]];
+    core.runs[0].results = manifest.coreIds.map(id => ({ ...core.runs[0].results[0], id, planPassed: true, passed: true, ledgerPassed: true, previewUnchanged: true }));
+    expect(evaluationPassed(core)).toBe(true);
+    Object.assign(core.runs[0].results[0], { planPassed: false, passed: false });
+    expect(evaluationPassed(core)).toBe(false);
     const duplicate=structuredClone(current);duplicate.runs[0].results[1]=duplicate.runs[0].results[0];
     expect(summarizeReport(duplicate).acceptance.coverageComplete).toBe(false);
     const mixedModel=structuredClone(reports[0]);mixedModel.runs[1].model.modelId='other-model';

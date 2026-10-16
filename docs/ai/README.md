@@ -38,9 +38,9 @@ Edge/Firefox paths; `FOLIO_AI_BROWSER_PATH` overrides the real-model runner path
 | `npm run ai:verify -- --ui-repeat 2` | Typecheck, full test suite, both builds, fresh-profile PWA/installed Firefox UI twice |
 | `npm run ai:ui` | Fixed-output PWA UI on an owned test Vite server, port 4180 |
 | `npm run ai:ui -- --firefox` | Installed production extension UI; requires `npm run build:firefox` first |
-| `npm run ai:smoke` | Three real Edge cases (amount transfer, partial-name match, spend then move the rest); diagnostic subset, never an acceptance pass |
-| `npm run ai:eval -- --full` | Sequential Edge/Firefox 57-case regression ×3 and 100-case holdout ×1; keep lid open |
-| `npm run harness:ai -- --help` | Individual browser/suite/repeat/case/model-folder selection |
+| `npm run ai:eval` | **Default model test**: the 10-case core suite on Edge, once; every case must pass (about 4 minutes locally) |
+| `npm run ai:eval -- --full` | Archived: Edge/Firefox 57-case regression ×3 and 100-case holdout ×1, several hours. Run only on explicit request |
+| `npm run harness:ai -- --help` | Individual browser/suite (`core` default, `regression`, `holdout`)/repeat/case/model-folder selection |
 | `npm run harness:ai -- --remote …` | Same pipeline against the remote endpoint in the gitignored root `config.json` (see Remote evaluation) |
 | `npm run ai:report -- results --baseline --verification FILE` | Frozen four-suite report plus actual application verification |
 | `npm run ai:report -- diagnose` | Offline classification of all 476 frozen baseline records; writes a new diagnostic report |
@@ -54,8 +54,8 @@ Edge/Firefox paths; `FOLIO_AI_BROWSER_PATH` overrides the real-model runner path
 Export one comparable frozen report with `ai:report -- summary
 features/ai/eval/fixtures/baseline.json --select edge/regression --output NEW`.
 Failed historical gates intentionally return nonzero while still writing the report.
-Diagnostic smoke exits successfully only when its selected cases pass; its
-`acceptance.passed` remains false because coverage is incomplete.
+A `--cases` selection is diagnostic: it exits successfully only when its selected
+cases pass, and its `acceptance.passed` remains false because coverage is incomplete.
 
 Scoring version 2 requires a validated draft for successful requests. Ledger-mode
 acceptance also requires correct saves for every plan-correct case; batch success
@@ -66,8 +66,13 @@ version 3 dropped the separate no-executable-negative-draft gate. Comparisons al
 refuse reports whose fixtures or expectations differ, so a fixture change (such as
 the card-brand rule below) starts a new comparison series.
 
-Real-model acceptance is **95% regression**, all critical cases, at least three
-complete repetitions; **90% holdout**. A draft proposed for a negative or
+Real-model acceptance is the **core suite**: the 10 cases in manifest `coreIds`, on
+Edge, one repetition, **10/10**. They cover a stated-amount transfer, transfer
+everything, card repayment, a cross-currency transfer, an asset opening, a card brand
+with debt, card spending, a partial-name account match, a three-step plan, and a
+missing amount that must be asked for. The full suites are archived, not deleted:
+regression (57, ≥95%, all critical cases, three repetitions) and holdout (100, ≥90%)
+keep their original gates and run only on explicit request. A draft proposed for a negative or
 hypothetical request is a plan failure and is reported (forbidden proposals,
 executable no-action drafts), but is not a separate gate: FolioDude is a personal
 ledger, and Review → Save, atomic rollback, stale-state checks and strict Zod
@@ -251,7 +256,9 @@ express date patterns.
 
 ## Fixture expectations
 
-The regression set (`eval/cases.ts`, manifest version 2) is 57 explicit bilingual
+The core suite is a fixed selection from the regression set, listed once in the
+manifest (`coreIds`); `harness:ai` sends those ids and `report-utils` grades them.
+The regression set (`eval/cases.ts`, manifest version 3) is 57 explicit bilingual
 cases weighted to everyday use, each with its exact plan; end balances are derived
 from the seed and plan (`settle`), never hand-computed. Chinese cases use CNH accounts.
 

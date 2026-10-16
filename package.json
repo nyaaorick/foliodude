@@ -24,7 +24,6 @@
     "ai:ui": "node features/ai/eval/ui.mjs",
     "ai:verify": "node features/ai/eval/verify.mjs",
     "ai:eval": "node features/ai/eval/batch.mjs",
-    "ai:smoke": "node features/ai/eval/run.mjs --browser edge --cases transfer-amount-en-1,match-part-zh,multi-spend-all-en",
     "ai:report": "node features/ai/eval/report.mjs"
   },
   "dependencies": {

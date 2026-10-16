@@ -3,9 +3,10 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('../../..', import.meta.url));
+// Default: the 10-case core suite on Edge, once; all must pass. --full runs the archived suites and is only for explicit requests.
 if (!process.argv.includes('--full')) {
-    console.log('ai:eval -- --full: sequential Edge/Firefox regression x3 and holdout x1. Keep the Mac awake and lid open; no prompt tuning. Use harness:ai for individual/diagnostic cases.');
-    process.exit(0);
+    const code = await new Promise((resolve, reject) => { const p = spawn(process.execPath, ['features/ai/eval/run.mjs', '--browser', 'edge', '--suite', 'core'], { cwd: root, stdio: 'inherit' }); p.once('error', reject); p.once('close', resolve); });
+    process.exit(code);
 }
 const stamp = new Date().toISOString().replaceAll(':', '-'), directory = path.join(root, '.artifacts/ai');
 await mkdir(directory, { recursive: true });

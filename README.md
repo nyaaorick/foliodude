@@ -135,8 +135,10 @@ feature is Experimental.
 ```sh
 npm run ai:test
 npm run ai:verify -- --ui-repeat 2
-npm run ai:eval -- --full
+npm run ai:eval            # 10-case core suite, Edge, once
 ```
+
+The full suites (`ai:eval -- --full`) are archived and run only on explicit request.
 
 ## Community
 

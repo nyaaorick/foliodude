@@ -75,6 +75,7 @@ describe('frozen protocol evidence', () => {
     expect(generate).toHaveBeenCalledTimes(corpus.length + 1);
     const manifest = JSON.parse(await readFile(new URL('../eval/fixtures/manifest.json', import.meta.url), 'utf8'));
     expect(HARNESS_CASES.map(x => x.id)).toEqual(manifest.regressionIds);
+    expect(manifest.coreIds.filter((id: string) => !manifest.regressionIds.includes(id))).toEqual([]);
     const heldout = holdoutCases();
     expect(heldout.map(x => x.id)).toEqual(manifest.holdoutIds);
     expect(heldout.filter(x => x.id.startsWith('holdout-en-'))).toHaveLength(50);

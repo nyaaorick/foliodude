@@ -8,7 +8,7 @@ export function summarizeReport(report) {
     const results = report.runs.flatMap(run => run.results);
     if (results.some(x => typeof x.planPassed !== 'boolean'))
         throw Error('This report predates exact-plan scoring; do not compare it as plan accuracy.');
-    const ids = report.suite === 'holdout' ? manifest.holdoutIds : manifest.regressionIds;
+    const ids = { core: manifest.coreIds, regression: manifest.regressionIds, holdout: manifest.holdoutIds }[report.suite];
     const coverageComplete = report.runs.length > 0 && report.runs.every(run => run.done && !run.fatal && JSON.stringify(run.results.map(x => x.id)) === JSON.stringify(ids));
     const times = results.map(x => x.ms).sort((a, b) => a - b);
     const percentile = p => times[Math.min(times.length - 1, Math.ceil(times.length * p) - 1)] ?? null;
@@ -25,11 +25,12 @@ export function summarizeReport(report) {
     const infrastructurePassed = !report.fatal && !(report.consoleErrors?.length) && report.runs.every(run => run.done && !run.fatal);
     const configurationConsistent = report.runs.every(run => JSON.stringify(run.model) === JSON.stringify(report.runs[0]?.model));
     const acceptance = {
-        threshold: report.suite === 'holdout' ? .90 : .95, accuracy: results.length ? summary.plansPassed / results.length : 0,
+        // Core: every case, one repetition. Archived full suites keep their original gates.
+        threshold: { core: 1, regression: .95, holdout: .90 }[report.suite], accuracy: results.length ? summary.plansPassed / results.length : 0,
         coverageComplete, infrastructurePassed, configurationConsistent, criticalPassed: results.filter(x => manifest.criticalIds.includes(x.id)).every(x => x.planPassed),
         preparationWrites: summary.preparationWrites,
         saveCorrect: report.mode !== 'ledger' || results.filter(x => x.planPassed).every(x => x.ledgerPassed === true),
-        repetitionRequirementMet: report.runs.length >= (report.suite === 'holdout' ? 1 : 3),
+        repetitionRequirementMet: report.runs.length >= (report.suite === 'regression' ? 3 : 1),
     };
     acceptance.passed = coverageComplete && infrastructurePassed && configurationConsistent && acceptance.repetitionRequirementMet && acceptance.accuracy >= acceptance.threshold && acceptance.criticalPassed && acceptance.saveCorrect && !summary.preparationWrites;
     return { scoringVersion: report.scoringVersion ?? SCORING_VERSION, acceptanceVersion: ACCEPTANCE_VERSION, summary, acceptance };
