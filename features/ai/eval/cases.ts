@@ -98,7 +98,7 @@ export const HARNESS_CASES: HarnessCase[] = [
   ok('multi-create-spend-en', 'Open Trip Fund with $300 and spend 45 from it on a train ticket.', [], [opening('Trip Fund', 300), expense('Trip Fund', 45)]),
   ok('multi-create-transfer-zh', '新建人民币账户旅行基金，然后从招商银行转1000进去', [bank], [opening('旅行基金', 0, 'ASSET', 'CNH'), transfer('招商银行', '旅行基金', 1000)]),
   ok('multi-spend-all-en', 'Paid 12 for lunch from Cash Wallet, then move the rest to chase checking.', [chase, wallet], [expense('Cash Wallet', 12), transfer('Cash Wallet', 'chase checking', 'all')]),
-  ok('multi-two-transfers-zh', '从招商银行转500到支付宝，再转200到现金钱包', [bank, alipay, cash], [transfer('招商银行', '支付宝', 500), transfer('招商银行', '现金钱包', 200)]),
+  ok('multi-two-transfers-zh', '从招商银行转500到支付宝，再从招商银行转200到现金钱包', [bank, alipay, cash], [transfer('招商银行', '支付宝', 500), transfer('招商银行', '现金钱包', 200)]),
   ok('multi-repay-spend-en', 'Pay 100 to Amex Gold from chase checking, then log a $30 dinner on Amex Gold.', [chase, amex], [transfer('chase checking', 'Amex Gold', 100), expense('Amex Gold', 30)]),
   ok('multi-three-en', 'Create Gym Fund with 100, spend 40 from it, and move the rest to chase checking.', [chase], [opening('Gym Fund', 100), expense('Gym Fund', 40), transfer('Gym Fund', 'chase checking', 'all')]),
   // Edge group: nothing to do, missing information, host rejection, cancellation.
