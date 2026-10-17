@@ -17,7 +17,7 @@ export function IntentEntry({ disabled, onBusy }: { disabled: boolean; onBusy: (
   const [phase, setPhase] = useState<Phase>('idle');
   const [draft, setDraft] = useState<IntentDraft | null>(null);
   const [actions, setActions] = useState<EditableAction[]>([]);
-  const [notice, setNotice] = useState<{ kind: 'clarification' | 'no_action'; reply: string } | null>(null);
+  const [notice, setNotice] = useState<{ title: string; text: string } | null>(null);
   const [error, setError] = useState<ReturnType<typeof intentError> | null>(null);
   const [stale, setStale] = useState(false);
   const [receipt, setReceipt] = useState<{ saved: IntentReceipt; actions: IntentReview['plan']['actions'] } | null>(null);
@@ -48,7 +48,7 @@ export function IntentEntry({ disabled, onBusy }: { disabled: boolean; onBusy: (
         replaceDraft(null); setReceipt(null);
         const result = await prepareIntentDraft({ text }, { signal: controller.signal });
         if (result.status === 'ready') { replaceDraft(result.draft); setPhase('review'); setStale(false); }
-        else { setNotice({ kind: result.status, reply: result.reply }); setPhase('idle'); }
+        else { setNotice(result.status === 'rejected' ? { title: 'Preview not created', text: result.notice } : { title: 'About your request', text: result.reply }); setPhase('idle'); }
       } else if (operation === 'refresh') {
         const refreshed = await refreshIntentDraft(draft!, actions, { signal: controller.signal });
         replaceDraft(refreshed); setStale(false); setPhase('review');
@@ -92,8 +92,9 @@ export function IntentEntry({ disabled, onBusy }: { disabled: boolean; onBusy: (
     <Field label="What would you like to record?" htmlFor="intent-request"><Textarea ref={requestField} id="intent-request" rows={4} value={text} onChange={event => updateText(event.target.value)} disabled={busy || disabled} placeholder="Create chase with $300, or move everything from my wallet to chase checking." aria-describedby="intent-help" /></Field>
     <p id="intent-help" className="text-xs text-muted-foreground">English and Chinese supported. An opening balance defaults to 0. Generating a preview does not save anything.</p>
     <div className="flex flex-wrap gap-2"><Button onClick={() => void run('prepare')} disabled={busy || disabled || !text.trim()}>{phase === 'planning' ? 'Generating preview…' : 'Generate preview'}</Button>{busy && <Button variant="outline" onClick={() => request.current?.abort()}>Cancel</Button>}</div>
-    <div role="status" aria-live="polite" className="text-sm">{phase === 'planning' ? 'Preparing a preview. Your ledger has not changed.' : phase === 'saving' ? 'Saving all reviewed changes…' : notice && <div className="rounded-xl bg-muted/50 p-4"><p className="font-medium">{notice.kind === 'clarification' ? 'One more detail' : 'No changes to save'}</p><p className="mt-1">{notice.reply}</p>{notice.kind === 'clarification' && <p className="mt-2 text-xs text-muted-foreground">Add the missing detail to your request, then generate a new preview.</p>}</div>}</div>
+    <div role="status" aria-live="polite" className="text-sm">{phase === 'planning' ? 'Preparing a preview. Your ledger has not changed.' : phase === 'saving' ? 'Saving all reviewed changes…' : notice && <div className="rounded-xl bg-muted/50 p-4"><p className="font-medium">{notice.title}</p><p className="mt-1">{notice.text}</p></div>}</div>
     {draft && <div className="space-y-4 border-t border-border/70 pt-5">
+      {draft.notice && <p role="status" className="rounded-xl bg-muted/50 p-4 text-sm">{draft.notice}</p>}
       <div><h3 className="font-medium">Review {actions.length} {actions.length === 1 ? 'change' : 'changes'}</h3><p className="mt-1 text-sm text-muted-foreground">Check the names, amounts, and order. You can edit the fields below.</p></div>
       <fieldset disabled={busy || disabled} className="space-y-4">
         {actions.map((action, index) => {
@@ -110,7 +111,7 @@ export function IntentEntry({ disabled, onBusy }: { disabled: boolean; onBusy: (
         })}
       </fieldset>
       {validation && <p role="alert" className="text-sm text-destructive">{validation}</p>}
-      {stale && <Button variant="outline" onClick={() => void run('refresh')} disabled={busy || disabled}>Refresh preview</Button>}
+      {(stale || actions.some(action => action.action === 'transfer')) && <Button variant="outline" onClick={() => void run('refresh')} disabled={busy || disabled}>Refresh preview</Button>}
       <Button size="lg" onClick={() => void run('save')} disabled={busy || disabled || stale || !review}>Save {actions.length} {actions.length === 1 ? 'change' : 'changes'}</Button>
     </div>}
     {error && <div role="alert" className="space-y-2 rounded-xl border border-destructive/30 p-4 text-sm"><p className="text-destructive">{error.message}</p><details className="text-muted-foreground"><summary className="cursor-pointer">Technical details</summary><pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap text-xs">{error.detail}</pre></details></div>}

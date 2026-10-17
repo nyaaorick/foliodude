@@ -1,5 +1,5 @@
 import puppeteer from 'puppeteer-core';
-import { writeFile, mkdir } from 'node:fs/promises';
+import { writeFile, mkdir, readFile, rm } from 'node:fs/promises';
 import { createServer } from 'vite';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -7,16 +7,21 @@ const root = path.resolve(fileURLToPath(new URL('../../..', import.meta.url))), 
 await mkdir(artifacts, { recursive: true });
 const runId = new Date().toISOString().replaceAll(':', '-');
 const artifact = name => path.join(artifacts, `${runId}-${name}`);
+// A fresh profile per run isolates checks; it holds no model files and is removed after the browser closes.
+const profile = () => path.join(artifacts, 'profiles', `${isFirefox ? 'ui-firefox' : 'ui-pwa'}-${runId}`);
 let server, browser;
 const isFirefox = process.argv.includes('--firefox');
 const extensionUuid = 'ad165a15-0468-48b5-a2f2-457194c55d20';
 const report = { surface: isFirefox ? 'Firefox installed extension' : 'PWA', mode: 'Fixed remote Responses outputs; real UI, ledger and registry. Model accuracy evaluated separately.', checks: [], calls: 0 };
-let current = { steps: [] }, ignoresFormat = false;
+let current = { clarification: 'What would you like to record?' }, ignoresFormat = false;
 // Fixed outputs are written as internal plans and sent in the intent-tagged wire form.
 const INTENTS = { create_account: 'create', expense: 'spend', transfer: 'transfer' };
-const wire = plan => plan.clarification !== undefined ? { intent: 'ask', ...plan } : !plan.steps.length ? { intent: 'none' }
+const wire = plan => plan.clarification !== undefined ? { intent: 'ask', ...plan }
     : { intent: new Set(plan.steps.map(step => step.action)).size > 1 ? 'multi' : INTENTS[plan.steps[0].action], ...plan,
         steps: plan.steps.map(({ amount, ...step }) => step.action === 'transfer' && amount === 'all' ? { ...step, action: 'transfer_all' } : { ...step, ...(amount === undefined ? {} : { amount }) }) };
+const fxResponse = await readFile(path.join(root, 'features/ai/eval/fixtures/exchange-rates.json'), 'utf8');
+let failFx = false;
+report.fxCalls = 0;
 let page;
 report.errors = [];
 try {
@@ -24,7 +29,7 @@ try {
         server = await createServer({ configFile: path.join(root, 'vite.pwa.config.ts'), cacheDir: path.join(root, 'node_modules/.vite-ai-ui'), server: { host: '127.0.0.1', port: 4180, strictPort: true } });
         await server.listen();
     }
-    browser = await puppeteer.launch({ browser: isFirefox ? 'firefox' : 'chrome', executablePath: isFirefox ? '/Applications/Firefox.app/Contents/MacOS/firefox' : '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge', headless: !isFirefox, userDataDir: path.join(artifacts, 'profiles', `${isFirefox ? 'ui-firefox' : 'ui-pwa'}-${runId}`), ...(isFirefox ? { args: ['--remote-allow-system-access'], extraPrefsFirefox: { 'extensions.webextensions.uuids': JSON.stringify({ 'foliodude@foliodude.it.com': extensionUuid }) } } : {}) });
+    browser = await puppeteer.launch({ browser: isFirefox ? 'firefox' : 'chrome', executablePath: isFirefox ? '/Applications/Firefox.app/Contents/MacOS/firefox' : '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge', headless: !isFirefox, userDataDir: profile(), ...(isFirefox ? { args: ['--remote-allow-system-access'], extraPrefsFirefox: { 'extensions.webextensions.uuids': JSON.stringify({ 'foliodude@foliodude.it.com': extensionUuid }) } } : {}) });
     if (isFirefox) {
         report.extensionId = await browser.installExtension(path.join(root, '.output/firefox-mv3'));
     }
@@ -34,6 +39,10 @@ try {
     await page.setViewport({ width: isFirefox ? 390 : 1000, height: 900 });
     await page.setRequestInterception(true);
     const handleRequest = async (req) => {
+        if (req.url().startsWith('https://v6.exchangerate-api.com/v6/')) {
+            report.fxCalls++;
+            return req.respond({ status: failFx ? 503 : 200, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' }, body: failFx ? '{}' : fxResponse });
+        }
         if (!req.url().startsWith('https://recovery-ui.example.invalid/'))
             return req.continue();
         if (req.method() === 'OPTIONS')
@@ -150,21 +159,31 @@ try {
     current = { clarification: 'Which destination account should receive the money?' };
     await fill('#intent-request', 'Move all money from Wallet');
     await click('Generate preview');
-    await contains('One more detail');
+    await contains('About your request');
     await contains('Which destination');
     record('Clarification keeps request visible');
-    current = { steps: [] };
+    current = { clarification: 'Understood. What would you like to record?' };
     await fill('#intent-request', 'Do not transfer anything');
     await click('Generate preview');
-    await contains('No changes to save');
-    record('No-action offers no Save');
+    await contains('Understood. What would you like to record?');
+    if (await page.evaluate(() => [...document.querySelectorAll('button')].some(b => /^Save \d/.test(b.textContent)))) throw Error('Ask reply offered Save');
+    record('Negation returns ask without Save');
+    const beforeZero = !isFirefox ? await snapshot() : null;
+    current = { steps: [{ action: 'transfer', from: 'Bank', to: 'Wallet', amount: 0 }] };
+    await fill('#intent-request', 'Move money out of Bank into Wallet');
+    await click('Generate preview');
+    await contains('Preview not created');
+    await contains('A transfer needs a numeric amount.');
+    if (await page.evaluate(() => [...document.querySelectorAll('button')].some(b => /^Save \d/.test(b.textContent)))) throw Error('Zero amount offered Save');
+    if (beforeZero && JSON.stringify(await snapshot()) !== JSON.stringify(beforeZero)) throw Error('Zero amount changed ledger');
+    record('Zero amount is rejected with a notice, no draft or ledger writes');
     current = '{"steps":[]}\nHere is an explanation.';
     await fill('#intent-request', 'test malformed output');
     await click('Generate preview');
     await contains('The AI could not produce a valid preview');
     await contains('Technical details');
     record('Friendly error with collapsed diagnostics');
-    ignoresFormat = true; current = { steps: [] };
+    ignoresFormat = true; current = { clarification: 'What would you like to record?' };
     await fill('#intent-request', 'Do not transfer anything again');
     await click('Generate preview');
     await contains('applied text instead of json_schema output');
@@ -225,6 +244,41 @@ try {
         report.accountsText = await page.evaluate(() => document.body.innerText);
         report.screenshotNote = 'Firefox BiDi cannot screenshot privileged extension documents; DOM flow and final account values verified.';
     }
+    if (!isFirefox) {
+        await page.goto(url + '#/lab');
+        await generate('Open Euro Purse in EUR', [{ action: 'create_account', name: 'Euro Purse', currency: 'EUR' }]);
+        await save(1);
+        await generate('Send 10 from Bank into Euro Purse', [{ action: 'transfer', from: 'Bank', to: 'Euro Purse', amount: 10 }]);
+        await contains('No exchange rate API key configured. Using a 1:1 exchange rate.');
+        await contains('€10.00');
+        if (report.fxCalls !== 0 || await page.$('#intent-0-targetAmount')) throw Error('AI transfer requested a received amount or called FX without a key');
+        record('Missing FX key shows 1:1 notice and received amount is calculated');
+        await page.evaluate(async root => { const { saveApiKey } = await import(`/@fs${root}/lib/actions/api-key-actions.ts`); await saveApiKey({ provider: 'exchangerate', apiKey: 'fixture-only' }); }, root);
+        await click('Refresh preview');
+        await contains('€9.20');
+        if (report.fxCalls !== 1) throw Error('Refresh did not fetch exactly one FX snapshot');
+        await fill('#intent-0-amount', '20');
+        await contains('€18.40');
+        await fill('#intent-0-amount', '10');
+        await contains('€9.20');
+        await save(1);
+        if (report.fxCalls !== 1) throw Error('Save refetched the reviewed exchange rate');
+        record('API rate calculates edited preview and Save uses the same rate');
+        failFx = true;
+        await generate('Send another 10 from Bank into Euro Purse', [{ action: 'transfer', from: 'Bank', to: 'Euro Purse', amount: 10 }]);
+        await contains('Exchange rates are unavailable. Using a 1:1 exchange rate.');
+        await contains('€19.20');
+        await save(1);
+        const fxLedger = await page.evaluate(async root => {
+            const { getDb } = await import(`/@fs${root}/lib/db/client.ts`); const db = await getDb();
+            return { accounts: (await db.query("SELECT name,balance FROM accounts WHERE name IN ('Bank','Euro Purse') ORDER BY name")).rows,
+                metadata: (await db.query("SELECT metadata FROM transactions WHERE type='TRANSFER' ORDER BY seq DESC LIMIT 2")).rows };
+        }, root);
+        if (JSON.stringify(fxLedger.accounts) !== JSON.stringify([{ name: 'Bank', balance: 83 }, { name: 'Euro Purse', balance: 19.2 }])
+            || fxLedger.metadata[0].metadata.target_amount !== 10 || fxLedger.metadata[1].metadata.target_amount !== 9.2) throw Error('FX saved balances or metadata differ from preview');
+        report.fxLedger = fxLedger;
+        record('FX API failure shows notice and saves at the displayed 1:1 rate');
+    }
     if (report.errors.length)
         throw Error(report.errors.join("\n"));
     report.passed = true;
@@ -241,6 +295,7 @@ catch (error) {
 finally {
     await writeFile(artifact(isFirefox ? 'recovery-ui-extension.json' : 'recovery-ui-pwa.json'), JSON.stringify(report, null, 2));
     await browser?.close();
+    await rm(profile(), { recursive: true, force: true });
     await server?.close();
     console.log(JSON.stringify({ report: artifact(isFirefox ? 'recovery-ui-extension.json' : 'recovery-ui-pwa.json'), surface: report.surface, passed: report.passed, checks: report.checks.length, calls: report.calls }));
 }

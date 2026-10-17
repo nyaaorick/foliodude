@@ -115,8 +115,8 @@ const expense = tool({
 });
 const transferExtraction = z.object({ from: Name.describe('literal source name'), to: Name.describe('literal destination name'), amount: z.union([Money, z.literal('all')]).describe('amount sent, or "all"'),
   fromCurrency: Currency.optional().describe('source currency if stated'), toCurrency: Currency.optional().describe('destination currency if stated'),
-  targetAmount: Money.optional().describe('amount received; required across currencies'), memo: z.string().optional().describe('note if stated') }).strict();
-const transferRest = pick(transferExtraction.shape, ['fromCurrency', 'toCurrency', 'targetAmount', 'memo']);
+  memo: z.string().optional().describe('note if stated') }).strict();
+const transferRest = pick(transferExtraction.shape, ['fromCurrency', 'toCurrency', 'memo']);
 const transfer = tool({
   name: 'transfer', description: 'move money or repay a card',
   extractionSchema: transferExtraction,
@@ -132,10 +132,9 @@ const transfer = tool({
     const from = context.resolve(value.from, value.fromCurrency), to = context.resolve(value.to, value.toCurrency);
     if (from.type !== AccountType.ASSET) throw Error('Transfers must originate from an asset account.');
     if (from.id === to.id) throw Error('Source and destination accounts must be different');
-    if (from.currency !== to.currency && value.targetAmount === undefined) throw Error('Cross-currency transfers require an explicit target amount.');
     return { fromAccountId: from.id, toAccountId: to.id, amount: value.amount === 'all' ? 'all' as const : context.money(value.amount),
       fromCurrency: from.currency, toCurrency: to.currency,
-      targetAmount: value.targetAmount === undefined ? undefined : context.money(value.targetAmount), memo: value.memo };
+      memo: value.memo };
   },
   async execute(value, { tx, resolve }) {
     const fromAccountId = z.string().uuid().parse(resolve(value.fromAccountId)), toAccountId = z.string().uuid().parse(resolve(value.toAccountId));

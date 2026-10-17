@@ -104,12 +104,10 @@ async function diagnose(files) {
             return 'runtime/aborted-request';
         if (x.failureKind === 'database')
             return 'database/unexpected-save-failure';
-        if (x.expected.outcome === 'no_action' && x.saveMs > 0)
-            return 'semantic/executable-no-action-request';
-        if (x.expected.outcome === 'no_action' && x.extracted?.length)
-            return 'semantic/blocked-no-action-proposal';
-        if (x.expected.outcome === 'no_action')
-            return 'semantic/no-action-response';
+        if (x.expectedPlan?.length === 0 && x.saveMs > 0)
+            return 'semantic/executable-ask-request';
+        if (x.expectedPlan?.length === 0 && x.extracted?.length)
+            return 'semantic/blocked-ask-proposal';
         if (x.expected.outcome === 'clarification')
             return 'semantic/missing-clarification';
         if (x.error?.includes('name must remain verbatim'))

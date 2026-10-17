@@ -37,7 +37,6 @@ export function IntentActionFields({ action, index, actions, draft, change }: {
                 {accountField('from', 'From')}{accountField('to', 'To')}
                 <label className="flex items-center gap-2 text-sm sm:col-span-2"><input type="checkbox" checked={action.amount === 'all'} onChange={event => change(index, 'amount', event.target.checked ? 'all' : 1)}/>Entire remaining balance</label>
                 {action.amount !== 'all' && numberField('amount', 'Transfer amount')}
-                {selectedAccount('from')?.currency !== selectedAccount('to')?.currency && numberField('targetAmount', 'Amount received (destination currency)')}
               </>}
               {action.action !== 'create_account' && <Field label="Memo (optional)" htmlFor={id('memo')}><Input id={id('memo')} value={String(action.memo ?? '')} onChange={event => change(index, 'memo', event.target.value)}/></Field>}
             </div>);

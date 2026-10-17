@@ -30,6 +30,7 @@ async function run(options: RunOptions) {
     // A selection runs in the order given, so the core suite matches the manifest order its coverage is graded against.
     const fixtures = options.cases ? options.cases.flatMap(id => suite.filter(f => f.id === id)) : suite;
     if (!fixtures.length || options.cases?.some(id => !suite.some(f => f.id === id))) throw new Error('Unknown or empty fixture selection.');
+    await saveApiKey({ provider: 'exchangerate', apiKey: 'fixture-only' });
     state.phase = 'loading'; show();
     let files: FileList | undefined;
     let model: LocalModelConfig = DEFAULT_LOCAL_MODEL;
@@ -98,6 +99,9 @@ async function run(options: RunOptions) {
       }
       finally { stopMlp(); stopObserving(); clearTimeout(timeout); if (timer) clearTimeout(timer); if (prepared?.status === 'ready') discardIntentDraft(prepared.draft); }
       const expected = expectedPlan(fixture);
+      // A host rejection (zero amount) passes only an amount_required fixture; elsewhere it is a model format failure.
+      const rejected = prepared?.status === 'rejected';
+      if (rejected && fixture.expected.outcome !== 'amount_required') failureKind = 'format';
       const planPassed = planOutcomeMatches(fixture, prepared?.status, extracted, abort.signal);
       if (!planPassed && failureKind !== 'format') failureKind = 'semantic';
       const ms = performance.now() - start; const after = await snapshot();
@@ -108,10 +112,10 @@ async function run(options: RunOptions) {
         Object.entries(expected).every(([key, value]) => actualAccounts[index][key as keyof typeof actualAccounts[number]] === value));
       const transactionsMatch = after.transactions.length === fixture.expected.transactions &&
         (!fixture.expected.amounts || JSON.stringify(after.transactions.map(t => t.amount).sort((a,b) => a-b)) === JSON.stringify([...fixture.expected.amounts].sort((a,b) => a-b)));
-      const noAction = prepared?.status === 'no_action' || prepared?.status === 'clarification';
-      const outcomeMatch = fixture.expected.outcome === 'success' ? !error && !noAction
-        : fixture.expected.outcome === 'clarification' ? !error && noAction && prepared?.status === 'clarification' && unchanged
-        : fixture.expected.outcome === 'no_action' ? !error && noAction && unchanged
+      // Ledger scoring: an ask and a host rejection both leave no draft, as before.
+      const asks = prepared?.status === 'clarification' || rejected;
+      const outcomeMatch = fixture.expected.outcome === 'success' ? !error && !asks
+        : fixture.expected.outcome === 'clarification' || fixture.expected.outcome === 'amount_required' ? !error && asks && unchanged
         : !!error && unchanged && (!fixture.expected.error || error.includes(fixture.expected.error)) && (fixture.expected.outcome !== 'cancel' || (abort.signal.aborted && abort.signal.reason?.name === 'AbortError'));
       state.results.push({ id: fixture.id, text: fixture.text, expected: fixture.expected, ms,
         passed: planPassed && previewUnchanged && (options.mode === 'extraction' || (accountsMatch && transactionsMatch && outcomeMatch)),

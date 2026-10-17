@@ -16,6 +16,7 @@ export interface IntentDraft {
   readonly actions: MlpAction[];
   readonly accounts: IntentAccount[];
   readonly today: string;
+  readonly notice?: string;
 }
 export interface PreviewStep {
   action: MlpAction['action'];
@@ -27,7 +28,7 @@ export interface PreviewStep {
 export interface IntentReview { plan: MlpPlan; steps: PreviewStep[]; referencedIds: string[] }
 
 /** Estimate ordered balances for review only. Executors independently read live balances. */
-export function reviewActions(actions: unknown, accounts: IntentAccount[], today: string): IntentReview {
+export function reviewActions(actions: unknown, accounts: IntentAccount[], today: string, fxRates: Record<string, number> = {}): IntentReview {
   const plan = normalizeMlp(actions, accounts, today);
   if (!plan.steps.length) throw Error('Add an action before saving.');
   const balances = new Map(accounts.map(account => [account.id, { ...account }]));
@@ -60,7 +61,13 @@ export function reviewActions(actions: unknown, accounts: IntentAccount[], today
     const from = balances.get(value.fromAccountId)!, to = balances.get(value.toAccountId)!;
     const amount = value.amount === 'all' ? from.balance : normalizeMoneyAmount(value.amount);
     if (amount <= 0) throw Error('No transferable balance in the source account.');
-    const received = from.currency === to.currency ? amount : normalizeMoneyAmount(value.targetAmount!);
+    let received = amount;
+    if (from.currency !== to.currency) {
+      if (!fxRates[from.currency] || !fxRates[to.currency]) throw Error('Refresh preview to load exchange rates for these currencies.');
+      received = normalizeMoneyAmount(new Decimal(amount).mul(fxRates[from.currency]).div(fxRates[to.currency]));
+      if (received <= 0) throw Error('Converted amount rounds to 0. Increase the transfer amount.');
+      step.arguments = { ...value, targetAmount: received };
+    }
     change(from.id, -amount); change(to.id, received);
     return { action: step.name, title: `${from.name} → ${to.name}`, amount, currency: from.currency, changes };
   });

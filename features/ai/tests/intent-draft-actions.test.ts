@@ -6,7 +6,7 @@ import { executeMlp, prepareMlp, MLP_LIMITS, MLP_OUTPUT_FORMAT, ACTION_REGISTRY 
 import { prepareIntentDraft, commitIntentDraft, reviewIntentDraft, refreshIntentDraft } from '@/features/ai/application/intent-draft-actions';
 import type { IntentDraft } from '@/features/ai/application/intent-draft';
 import { saveAiSettings } from '@/features/ai/application/ai-settings-actions';
-import { setApiKey } from '@/lib/db/settings';
+import { setApiKey, clearApiKey } from '@/lib/db/settings';
 import { createTestContext, allTransactions, seedAccount } from '@/lib/db/testing';
 import { AccountType } from '@/lib/types/accounts';
 import { adjustBalance } from '@/lib/db/ledger';
@@ -19,7 +19,6 @@ function wire(value: unknown) {
   const plan = value as { steps?: Array<{ action: string }>; clarification?: string };
   if (plan.clarification !== undefined) return { intent: 'ask', ...plan };
   if (!Array.isArray(plan.steps)) return value;
-  if (!plan.steps.length) return { intent: 'none' };
   // A transfer of "all" travels as its own transfer_all view, without an amount.
   const steps = plan.steps.map(step => step.action === 'transfer' && (step as { amount?: unknown }).amount === 'all' ? { ...step, action: 'transfer_all', amount: undefined } : step);
   return { intent: new Set(plan.steps.map(step => step.action)).size > 1 ? 'multi' : INTENTS[plan.steps[0].action], ...plan, steps };
@@ -62,6 +61,43 @@ describe('reviewable intent entry', () => {
       expect(body.text).toEqual({ format: MLP_OUTPUT_FORMAT }); expect(body.instructions + body.input).not.toMatch(/JSON|Markdown|brace/i);
     }
   });
+  it('computes FX in preview and save, freezes the reviewed rate, and notices 1:1 fallbacks', async () => {
+    await seedAccount(ctx, { name: 'Cash', balance: 100 });
+    await seedAccount(ctx, { name: 'Euro', currency: 'EUR', balance: 0 });
+    await setApiKey(ctx.db, 'exchangerate', 'fx-test-key');
+    const actions = [expense(10), { action: 'transfer', from: 'Cash', to: 'Euro', amount: 'all' }];
+    mockPlan({ steps: actions });
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ result: 'success', conversion_rates: { USD: 1, EUR: 0.92 } })));
+    const result = await prepareIntentDraft({ text: 'Cash paid 10; send its remaining funds into Euro' });
+    if (result.status !== 'ready') throw Error('Expected FX preview');
+    expect(JSON.stringify(MLP_OUTPUT_FORMAT.schema)).not.toContain('targetAmount');
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]!.body as string).instructions).not.toContain('targetAmount');
+    expect(reviewIntentDraft(result.draft).steps[1].changes[1].after).toBe(82.8);
+    expect((await ctx.db.query('SELECT balance FROM accounts ORDER BY name')).rows).toEqual([{ balance: 100 }, { balance: 0 }]);
+    const edited = [expense(20), actions[1]];
+    const review = reviewIntentDraft(result.draft, edited);
+    expect(review.steps[1].changes[1].after).toBe(73.6);
+    // Neither a mutable public draft nor a later API response may change the private reviewed quote.
+    Object.assign(result.draft, { fxRates: { USD: 1, EUR: 999 } });
+    await commitIntentDraft(result.draft, edited);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect((await ctx.db.query('SELECT name,balance FROM accounts ORDER BY name')).rows).toEqual([{ name: 'Cash', balance: 0 }, { name: 'Euro', balance: 73.6 }]);
+    expect((await allTransactions(ctx.db))[1].metadata).toMatchObject({ target_amount: 73.6, implied_exchange_rate: 0.92 });
+    await seedAccount(ctx, { name: 'Reserve', balance: 20 });
+    await clearApiKey(ctx.db, 'exchangerate');
+    const fallback = await draft('Reserve sends 10 to Euro', [{ action: 'transfer', from: 'Reserve', to: 'Euro', amount: 10 }]);
+    expect(fallback.notice).toContain('No exchange rate API key');
+    expect(reviewIntentDraft(fallback).steps[0].changes[1].after).toBe(83.6);
+    await commitIntentDraft(fallback);
+    await setApiKey(ctx.db, 'exchangerate', 'fx-test-key');
+    mockPlan({ steps: [{ action: 'transfer', from: 'Reserve', to: 'Euro', amount: 10 }] });
+    vi.mocked(fetch).mockRejectedValueOnce(new Error('network unavailable'));
+    const failedRate = await prepareIntentDraft({ text: 'Reserve sends 10 to Euro' });
+    if (failedRate.status !== 'ready') throw Error('Expected fallback preview');
+    expect(failedRate.draft.notice).toContain('1:1');
+    await commitIntentDraft(failedRate.draft);
+    expect((await ctx.db.query('SELECT name,balance FROM accounts ORDER BY name')).rows).toEqual([{ name: 'Cash', balance: 0 }, { name: 'Euro', balance: 93.6 }, { name: 'Reserve', balance: 0 }]);
+  });
   it('fails explicitly when an endpoint applies another output format or truncates it', async () => {
     mockPlan({ steps: [newAccount] }, { text: { format: { type: 'text' } } });
     await expect(prepareIntentDraft({ text: 'set up Cash with 50' })).rejects.toThrow('applied text instead of json_schema');
@@ -88,6 +124,11 @@ describe('reviewable intent entry', () => {
       ['spend 10 from Cash', expense(10)],
       ['spend 10 from Cash on 2026-02-30', { steps: [{ ...expense(10), date: '2026-02-30' }] }],
     ] as const) { answer(value); await expect(prepareIntentDraft({ text })).rejects.toThrow(); }
+    await seedAccount(ctx, { name: 'Bank', balance: 20 });
+    const before = (await ctx.db.query('SELECT name,balance FROM accounts ORDER BY name')).rows;
+    answer({ steps: [expense(10), { action: 'transfer', from: 'Cash', to: 'Bank', amount: 0 }] });
+    await expect(prepareIntentDraft({ text: 'spend 10 from Cash; transfer from Cash to Bank' })).resolves.toEqual({ status: 'rejected', notice: 'A transfer needs a numeric amount. Add the amount to your request and generate a new preview.' });
+    expect((await ctx.db.query('SELECT name,balance FROM accounts ORDER BY name')).rows).toEqual(before);
     // everything-webgpu reports a post-decode schema rejection as a failed response; it must stay a format failure.
     create.mockResolvedValueOnce({ status: 'failed', error: { code: 'server_error', message: 'Generated JSON does not match schema at #/result.' }, output_text: '{"result":{}}' });
     await expect(prepareIntentDraft({ text: 'spend 10 from Cash' })).rejects.toMatchObject({ stage: 'format', output: '{"result":{}}' });
@@ -95,7 +136,7 @@ describe('reviewable intent entry', () => {
     await expect(prepareIntentDraft({ text: 'spend 10 from Cash' })).rejects.toThrow('Several accounts');
     expect(await allTransactions(ctx.db)).toHaveLength(0);
   });
-  it('defaults openings and initial debt without transactions, and returns clarification/no-action without writes', async () => {
+  it('defaults openings and initial debt without transactions, and returns ask without writes', async () => {
     await commitIntentDraft(await draft('创建一个账户, 叫chase', [{ action: 'create_account', name: 'chase' }]));
     await commitIntentDraft(await draft('我要创立一个amex账户', [{ action: 'create_account', name: 'amex' }]));
     await commitIntentDraft(await draft('我要建立一个信用卡，里面负债20刀', [{ action: 'create_account', name: '信用卡', type: 'LIABILITY', balance: 20 }]));
@@ -103,7 +144,8 @@ describe('reviewable intent entry', () => {
       { name: 'amex', type: 'ASSET', currency: 'USD', balance: 0 }, { name: 'chase', type: 'ASSET', currency: 'USD', balance: 0 },
       { name: '信用卡', type: 'LIABILITY', currency: 'USD', balance: -20 },
     ]);
-    mockPlan({ steps: [] }); expect(await prepareIntentDraft({ text: '不要建立新账户' })).toHaveProperty('status', 'no_action');
+    mockPlan({ clarification: '好的，不会建立账户。你想记录什么？' });
+    expect(await prepareIntentDraft({ text: '不要建立新账户' })).toEqual({ status: 'clarification', reply: '好的，不会建立账户。你想记录什么？' });
     mockPlan({ clarification: 'Please provide the amount.' });
     expect(await prepareIntentDraft({ text: '从amex支付午饭' })).toEqual({ status: 'clarification', reply: 'Please provide the amount.' });
     expect(await allTransactions(ctx.db)).toHaveLength(0);

@@ -6,7 +6,8 @@ describe('evaluation acceptance',()=>{
   it('reproduces the frozen failures and refuses subsets, duplicate coverage and incomplete retention',async()=>{
     const {reports}=JSON.parse(await readFile(new URL('../eval/fixtures/baseline.json',import.meta.url),'utf8'));
     expect(reports.map(r=>summarizeReport(r).summary.plansPassed)).toEqual([28,35,46,44]);
-    expect(reports.map(r=>summarizeReport(r).summary.executableNegativeDrafts)).toEqual([0,0,1,3]);
+    // Empty-plan expectations now include missing-info requests as well as historical no-action cases.
+    expect(reports.map(r=>summarizeReport(r).summary.executableNegativeDrafts)).toEqual([1,3,1,3]);
     expect(reports.every(r=>!summarizeReport(r).acceptance.passed)).toBe(true);
     // Coverage is graded against the current manifest; the frozen baseline predates it, so derive a complete report from it.
     const current = structuredClone(reports[0]);
@@ -14,7 +15,6 @@ describe('evaluation acceptance',()=>{
     const savesFailed = structuredClone(current);
     for (const run of savesFailed.runs) for (const row of run.results) {
       Object.assign(row, { planPassed: true, passed: false, ledgerPassed: false, previewUnchanged: true });
-      if (row.expected.outcome === 'no_action') row.extracted = [];
     }
     expect(summarizeReport(savesFailed).acceptance.accuracy).toBe(1);
     expect(summarizeReport(savesFailed).acceptance.saveCorrect).toBe(false);

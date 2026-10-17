@@ -13,7 +13,7 @@ const args = process.argv.slice(2);
 const value = (name, fallback) => { const index = args.indexOf(name); return index < 0 ? fallback : args[index + 1]; };
 if (args.includes('--help')) {
   console.log('npm run harness:ai -- [--browser edge|chrome|firefox] [--folder /path/to/compiled-model] [--mode ledger|extraction] [--cases comma,separated,ids] [--repeat 1] [--suite core|regression|holdout] [--remote]');
-  console.log('Default: the 10-case core suite (manifest coreIds). regression (57) and holdout (100) are archived full suites; run them only on request.');
+  console.log('Default: the 10-case core suite (manifest coreIds). regression (53) and holdout (68) are archived full suites; run them only on request.');
   console.log('--remote: the Responses endpoint in the gitignored config.json ({"remote":{"baseUrl","model","apiKey","tokensPerMinute"}}), paced to its token limit.');
   console.log('Uses a managed test profile and isolated synthetic ledger on 127.0.0.1:4175. Default source: direct Hugging Face URL. Set FOLIO_AI_BROWSER_PATH for other installed browser locations.');
   process.exit(0);
@@ -33,7 +33,7 @@ if (remote && folder) throw Error('Choose --remote or --folder, not both.');
 const modelRoot = folder ? await realpath(path.resolve(folder)) : null;
 const artifacts = path.join(root, '.artifacts/ai'); await mkdir(artifacts, { recursive: true });
 const reportFile = path.join(artifacts, `${browserName}-${suite}-${mode}${remote ? '-remote' : ''}-${new Date().toISOString().replaceAll(':','-')}.json`);
-const sourceFiles = ['package-lock.json', 'features/ai/application/intent-draft-actions.ts', 'features/ai/application/intent-draft.ts', 'features/ai/protocol/mlp.ts', 'features/ai/protocol/output-format.ts', 'features/ai/protocol/action-registry.ts', 'features/ai/providers/text-client.ts', 'features/ai/runtime/local-runtime.ts', 'features/ai/config.ts', 'lib/db/migrations/001_init.sql', 'features/ai/eval/cases.ts', 'features/ai/eval/expected-plans.ts', 'features/ai/eval/holdout-cases.ts', 'features/ai/eval/harness.ts', 'features/ai/eval/run.mjs', 'features/ai/eval/report-utils.mjs', 'features/ai/eval/fixtures/manifest.json', 'features/ai/application/ai-settings-actions.ts', 'features/ai/application/remote-settings.ts', 'lib/db/settings.ts', 'lib/db/session.ts', 'lib/db/ledger.ts', 'lib/sync/writer.ts', 'lib/actions/create-accounts-actions.ts', 'lib/actions/createAssetsExpense.ts', 'lib/actions/createTransaction.ts', 'lib/actions/createTransfer.ts', 'lib/types/accounts.ts', 'lib/utils/local-date.ts', 'lib/utils/financial-analytics.ts', 'lib/db/client.ts', 'lib/db/tx.ts', 'lib/db/sql.ts', 'lib/data/expense-categories.ts', 'lib/types/rewards.ts'];
+const sourceFiles = ['package-lock.json', 'features/ai/application/intent-draft-actions.ts', 'features/ai/application/intent-draft.ts', 'features/ai/protocol/mlp.ts', 'features/ai/protocol/output-format.ts', 'features/ai/protocol/action-registry.ts', 'features/ai/providers/text-client.ts', 'features/ai/runtime/local-runtime.ts', 'features/ai/config.ts', 'lib/db/migrations/001_init.sql', 'features/ai/eval/cases.ts', 'features/ai/eval/expected-plans.ts', 'features/ai/eval/holdout-cases.ts', 'features/ai/eval/harness.ts', 'features/ai/eval/run.mjs', 'features/ai/eval/report-utils.mjs', 'features/ai/eval/fixtures/manifest.json', 'features/ai/application/ai-settings-actions.ts', 'features/ai/application/remote-settings.ts', 'lib/db/settings.ts', 'lib/db/session.ts', 'lib/db/ledger.ts', 'lib/sync/writer.ts', 'lib/actions/create-accounts-actions.ts', 'lib/actions/createAssetsExpense.ts', 'lib/actions/createTransaction.ts', 'lib/actions/createTransfer.ts', 'lib/types/accounts.ts', 'lib/utils/local-date.ts', 'lib/utils/fx-rates.ts', 'features/ai/eval/fixtures/exchange-rates.json', 'lib/utils/financial-analytics.ts', 'lib/db/client.ts', 'lib/db/tx.ts', 'lib/db/sql.ts', 'lib/data/expense-categories.ts', 'lib/types/rewards.ts'];
 async function sourceHashes() {
   return Object.fromEntries(await Promise.all(sourceFiles.map(async file => [file, createHash('sha256').update(await readFile(path.join(root,file))).digest('hex')])));
 }
@@ -72,6 +72,13 @@ try {
     ...(browserName === 'firefox' ? { extraPrefsFirefox: { 'dom.webgpu.enabled': true, 'gfx.webgpu.ignore-blocklist': true } } : {}) });
   report.version = await browser.version();
   const page = await browser.newPage();
+  const fxResponse = await readFile(path.join(root, 'features/ai/eval/fixtures/exchange-rates.json'), 'utf8');
+  await page.setRequestInterception(true);
+  page.on('request', request => {
+    if (request.url().startsWith('https://v6.exchangerate-api.com/v6/')) {
+      void request.respond({ status: 200, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' }, body: fxResponse });
+    } else void request.continue();
+  });
   page.on('pageerror', error => report.consoleErrors.push(String(error)));
   await page.goto('http://127.0.0.1:4175/');
   await page.waitForFunction(() => !!window.folioHarness, { timeout: 120000 });

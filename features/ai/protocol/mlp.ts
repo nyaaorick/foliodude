@@ -12,7 +12,8 @@ export interface MlpMeasurement { steps: number; actions: MlpActionName[]; candi
 const observers = new Set<(measurement: MlpMeasurement) => void>();
 export function observeMlp(observer: (measurement: MlpMeasurement) => void) { observers.add(observer); return () => { observers.delete(observer); }; }
 export interface MlpStep { name: MlpActionName; arguments: Record<string, unknown>; resultAlias?: string }
-export interface MlpPlan { steps: MlpStep[]; actions: MlpAction[]; clarification?: string }
+/** clarification is the model's ask; rejection is the host refusing a model answer (zero amount), shown as a notice. */
+export interface MlpPlan { steps: MlpStep[]; actions: MlpAction[]; clarification?: string; rejection?: string }
 export type MlpAction = z.infer<typeof MlpActionSchema>;
 
 // The discriminator comes first so constrained decoding chooses the action before its fields.
@@ -32,38 +33,51 @@ const viewSteps = (views: typeof VIEWS) => views.map(view => STEPS.get(view)!);
 const toolSteps = (tool: Tool) => { const [first, ...rest] = viewSteps(VIEWS.filter(view => view.tool === tool)); return rest.length ? z.discriminatedUnion('action', [first, ...rest]) : first; };
 const steps = (item: z.ZodType, min: number) => z.array(item).min(min).max(MLP_LIMITS.steps);
 // The intent comes first, so the model classifies the whole request before filling any fields. Each branch fixes
-// the plan's shape: none has no steps, ask has only a question, a single-action intent admits only that action.
+// the plan's shape: ask has only a reply, a single-action intent admits only that action.
 const MlpWireSchema = z.object({ result: z.discriminatedUnion('intent', [
-  z.object({ intent: z.literal('none') }).strict(),
   z.object({ intent: z.literal('ask'), clarification: z.string().trim().min(1) }).strict(),
   ...TOOLS.map(tool => z.object({ intent: z.literal(tool.plannerIntent), steps: steps(toolSteps(tool), 1) }).strict()),
   z.object({ intent: z.literal('multi'), steps: steps(z.discriminatedUnion('action', viewSteps(VIEWS) as [z.ZodObject, ...z.ZodObject[]]), 2) }).strict(),
 ] as [z.ZodObject, ...z.ZodObject[]]) }).strict();
 export const MLP_OUTPUT_FORMAT = jsonSchemaFormat('ledger_plan', MlpWireSchema);
-type MlpOutput = { steps: PlannerStep[] } | { clarification: string };
+type MlpOutput = { steps: PlannerStep[] } | { clarification: string } | { rejection: string };
+// The grammar cannot express different logical action kinds (transfer and transfer_all are the same kind).
+function assertMixedKinds(steps: PlannerStep[]): void {
+  const kinds = new Set(steps.map(step => VIEWS.find(view => view.name === step.action)!.tool.name));
+  if (kinds.size < 2) throw Error(`Intent multi needs steps of different kinds; got only ${[...kinds][0]}.`);
+}
 /** The only wire-to-internal conversion: drop strict-mode nulls for optional fields, map each view back to its action with
  *  the view's fixed fields, and map the intent back to the internal union. */
-function fromWire(raw: string): MlpOutput {
+function fromWire(raw: string, text: string): MlpOutput {
   let value: unknown;
   try { value = JSON.parse(raw); }
   catch { throw Error(`Invalid AI plan JSON: ${raw}`); }
-  const wire = (value as { result?: { steps?: unknown } } | null)?.result;
-  // The local decoder cannot exclude 0, so the local model writes 0 for amounts it does not know. A transfer of 0 is
-  // read as transfer_all, and a received amount of 0 as unstated. Review shows "Entire remaining balance" and Save
-  // still needs explicit confirmation.
-  const zeroAsAll = (step: unknown) => {
-    const { amount, targetAmount, ...rest } = step as { action?: unknown; amount?: unknown; targetAmount?: unknown };
-    if (rest.action !== 'transfer' && rest.action !== 'transfer_all') return step;
-    return { ...rest, ...(amount === 0 ? { action: 'transfer_all' } : amount === undefined ? {} : { amount }), targetAmount: targetAmount === 0 ? null : targetAmount };
-  };
-  if (Array.isArray(wire?.steps)) wire.steps = wire.steps.map(zeroAsAll).map(step => withoutOptionalNulls(step,
+  const wire = (value as { result?: { intent?: unknown; steps?: unknown } } | null)?.result;
+  if (Array.isArray(wire?.steps)) wire.steps = wire.steps.map(step => withoutOptionalNulls(step,
     VIEWS.find(view => view.name === (step as { action?: unknown })?.action)?.schema.shape ?? {}));
-  const result = MlpWireSchema.parse(value).result as { intent: string; clarification?: string; steps?: PlannerStep[] };
+  const parsed = MlpWireSchema.safeParse(value);
+  if (!parsed.success) {
+    // A fully shaped response whose sole defects are zero transaction amounts is rejected with a notice. This is the
+    // host refusing the model's answer, not a model ask. Never reinterpret zero as all, and never keep the other steps.
+    const zeroAmounts = parsed.error.issues.every(issue => issue.code === 'too_small' && issue.minimum === 0 && !issue.inclusive
+      && issue.path.at(-1) === 'amount'
+      && issue.path.reduce<unknown>((node, key) => (node as Record<PropertyKey, unknown>)?.[key], value) === 0);
+    if (zeroAmounts) {
+      if (wire?.intent === 'multi') assertMixedKinds(wire.steps as PlannerStep[]);
+      const chinese = /[\u3400-\u9fff]/.test(text);
+      const kinds = new Set(parsed.error.issues.map(issue => VIEWS.find(view => view.name === (wire!.steps as PlannerStep[])[issue.path[2] as number].action)!.tool.name));
+      const subject = chinese ? [...kinds].map(kind => kind === 'transfer' ? '转账' : '消费').join('和')
+        : kinds.size > 1 ? 'Transfers and expenses need' : kinds.has('transfer') ? 'A transfer needs' : 'An expense needs';
+      return { rejection: chinese ? `${subject}需要提供数字金额。请在请求里写明金额后重新生成预览。`
+        : `${subject} a numeric amount. Add the amount to your request and generate a new preview.` };
+    }
+    throw parsed.error;
+  }
+  const result = parsed.data.result as { intent: string; clarification?: string; steps?: PlannerStep[] };
   if (result.intent === 'ask') return { clarification: result.clarification! };
+  if (result.intent === 'multi') assertMixedKinds(result.steps!);
   result.steps = result.steps?.map(({ action, ...fields }) => { const view = VIEWS.find(item => item.name === action)!; return { action: view.tool.name, ...fields, ...view.fixed }; });
-  // The grammar cannot express "different kinds"; same-kind steps belong to that action's own intent.
-  if (result.intent === 'multi' && new Set(result.steps!.map(step => step.action)).size < 2) throw Error(`Intent multi needs steps of different kinds; got only ${result.steps![0].action}.`);
-  return { steps: result.steps ?? [] };
+  return { steps: result.steps! };
 }
 export class MlpError extends Error {
   constructor(public readonly stage: 'format' | 'validation', message: string, public readonly output?: unknown) { super(message); }
@@ -86,18 +100,18 @@ function compile(request: ReturnType<typeof context>, today: string) {
     const added = Object.keys(shape).filter(key => !(key in first)), removed = Object.keys(first).filter(key => !(key in shape));
     return `${view.name}: ${view.description}; as ${tool.plannerViews[0].name}${removed.length ? `, without ${removed.join(', ')}` : ''}${added.length ? `; ${fields(shape, added)}` : ''}`;
   }));
-  // Output syntax is enforced by MLP_OUTPUT_FORMAT; instructions carry only ledger semantics.
-  const intents = request.tools.map(tool => `${tool.plannerIntent} (only ${tool.plannerViews.map(view => view.name).join('/')} steps)`).join(', ');
-  const instructions = `Extract Chinese/English ledger actions. First classify the whole request: ${intents}, multi (steps of different kinds), none (no change), ask (required info missing; ask one short question).
-Execute only explicit requests or reported spending. Negation, questions, hypotheticals, greetings: none. Include ALL steps in order; resolve pronouns. Never create an existing account to spend/transfer.
-Copy exact names, casing, digits and spaces; exclude generic account/账户 suffixes. A category alone can be the account name.
-Opening defaults ASSET/USD/0. Credit cards, charge cards, card brands (Amex, Visa), owed money: LIABILITY with negative balance. Initial balance is not a transaction.
-Do not guess money or unstated details. Missing amount/source/destination: ask. Cross-currency needs explicit targetAmount. Today ${today}.
+  // The grammar enforces syntax; instructions and examples teach ledger semantics and view selection.
+  const intents = request.tools.map(tool => `${tool.plannerIntent}=${tool.plannerViews.map(view => view.name).join('/')}`).join(', ');
+  const instructions = `ledger：提取中英文记账动作。读完整请求再选intent：${intents}；不同种类混合用multi，同类多笔仍用该intent。
+先看accounts：已有账户只使用，简称唯一匹配后返回全名，绝不开重复账户。未列出的账户附初始资金/欠款表示开户；卡/品牌/欠款为LIABILITY，欠款负数。开户默认ASSET/USD/0，不是消费。
+已发生的消费选spend；还款从资产转入卡。全部/剩余选transfer_all，不填amount、不算余额。
+必须逐项输出所有操作并保持顺序，新账户先创建再使用。缺必填信息才ask，已有金额不要再问，不能用0代表未知。否定/假设/只咨询/闲聊用ask，礼貌请求仍执行。保留名称大小写数字空格；回复与用户同语言。Today ${today}.
 Examples:
-"Empty Acorn Jar into Maple Pouch" → transfer_all: Acorn Jar's remaining balance into Maple Pouch
-"枫叶钱包午饭花了12" → spend: 12 paid with 枫叶钱包
-"Should I move 30 out of Acorn Jar? Not yet" → none: a question, nothing changes
-"从枫叶钱包转钱给橡果罐" → ask: 转多少？
+accounts有Nori: "Nori paid 17 for tea" → spend: expense(Nori,17)
+"Add my UnionPay, debt 260" → create: create_account(UnionPay,LIABILITY,-260)
+"New Vela: 80; Vela buys food 7; empty Vela into Nori" → multi: create_account(Vela,80),expense(Vela,7),transfer_all(Vela,Nori)
+"Drain Fir into Elm" → {"result":{"intent":"transfer","steps":[{"action":"transfer_all","from":"Fir","to":"Elm","fromCurrency":null,"toCurrency":null,"memo":null}]}}
+"Move money from Fir to Elm" → {"result":{"intent":"ask","clarification":"How much?"}}
 Actions:
 ${specs.join('\n')}`;
   if (instructions.length > MLP_LIMITS.instructionChars) throw Error(`MLP instructions exceed the context budget (${instructions.length}/${MLP_LIMITS.instructionChars} characters).`);
@@ -116,10 +130,11 @@ export async function prepareMlp(text: string, accounts: MlpAccount[], signal?: 
   try { raw = await generateAiText(instructions, input, MLP_OUTPUT_FORMAT, signal); }
   catch (cause) { throw cause instanceof AiOutputError ? new MlpError('format', cause.message, cause.output) : cause; }
   let output: MlpOutput;
-  try { output = fromWire(raw); }
+  try { output = fromWire(raw, text); }
   catch (cause) { throw new MlpError('format', cause instanceof Error ? cause.message : String(cause), raw); }
   signal?.throwIfAborted();
   if ('clarification' in output) return { steps: [], actions: [], clarification: output.clarification };
+  if ('rejection' in output) return { steps: [], actions: [], rejection: output.rejection };
   try { return normalizeMlp(output.steps, eligible, today, text); }
   catch (cause) { throw new MlpError('validation', cause instanceof Error ? cause.message : String(cause), output); }
 }

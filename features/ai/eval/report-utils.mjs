@@ -1,8 +1,9 @@
 import { readFile } from 'node:fs/promises';
 export const manifest = JSON.parse(await readFile(new URL('./fixtures/manifest.json', import.meta.url), 'utf8'));
-export const SCORING_VERSION = 2;
-/** 3: drafts for no-action requests are plan failures, not a separate gate. */
-export const ACCEPTANCE_VERSION = 3;
+export const SCORING_VERSION = 5;
+/** 5: amount_required passes on the host zero-amount rejection or a model ask. */
+/** 4: ask is the only non-executing intent; proposals for ask fixtures are plan failures. */
+export const ACCEPTANCE_VERSION = 4;
 /** Grade complete ordered fixture coverage, never a successful subset. */
 export function summarizeReport(report) {
     const results = report.runs.flatMap(run => run.results);
@@ -16,8 +17,8 @@ export function summarizeReport(report) {
         cases: results.length, passed: results.filter(x => x.passed === true).length, failed: results.filter(x => x.passed === false).length,
         plansPassed: results.filter(x => x.planPassed).length, ledgersPassed: results.filter(x => x.ledgerPassed).length,
         preparationWrites: results.filter(x => !x.previewUnchanged).length,
-        forbiddenDrafts: results.filter(x => x.expected.outcome === 'no_action' && x.extracted?.length).length,
-        executableNegativeDrafts: results.filter(x => x.expected.outcome === 'no_action' && x.saveMs > 0).length,
+        forbiddenDrafts: results.filter(x => x.expectedPlan?.length === 0 && x.extracted?.length).length,
+        executableNegativeDrafts: results.filter(x => x.expectedPlan?.length === 0 && x.saveMs > 0).length,
         failures: Object.fromEntries(['format', 'semantic', 'validation', 'database'].map(kind => [kind, results.filter(x => !x.passed && x.failureKind === kind).length])),
         calls: results.reduce((sum, x) => sum + x.measurements.calls, 0), structured: results.filter(x => x.structured === true).length,
         p50Ms: times[Math.floor(times.length * .5)] ?? null, p95Ms: percentile(.95),

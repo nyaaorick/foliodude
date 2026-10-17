@@ -1,14 +1,16 @@
+import fx from './fixtures/exchange-rates.json';
 import type { CreateAccountInput, CurrencyId } from '@/lib/types/accounts';
 import { AccountType } from '@/lib/types/accounts';
 import { expectedActions, type ExpectedAction } from '@/features/ai/eval/expected-plans';
 
 export interface HarnessCase {
   id: string; text: string; seed: CreateAccountInput[]; plan?: ExpectedAction[];
-  expected: { accounts: Array<{ name: string; type: string; currency: string; balance: number; credit_limit?: number }>; transactions: number; amounts?: number[]; error?: string; outcome: 'success' | 'reject' | 'no_action' | 'clarification' | 'cancel' };
+  expected: { accounts: Array<{ name: string; type: string; currency: string; balance: number; credit_limit?: number }>; transactions: number; amounts?: number[]; error?: string; outcome: 'success' | 'reject' | 'clarification' | 'amount_required' | 'cancel' };
 }
 
 // Evaluation-only: never included in the model prompt. Weighted to everyday use: transfers, account creation,
 // spending, recognizing existing accounts by part of their name, and multi-step plans; a small edge group follows.
+// Same-language duplicates are dropped once their whole category passes; ids stay stable across manifest versions.
 type Seed = CreateAccountInput & { name: string; currency: CurrencyId };
 const asset = (name: string, balance: number, currency: CurrencyId = 'USD'): Seed => ({ name, type: AccountType.ASSET, currency, balance });
 const card = (name: string, balance: number, credit_limit: number, currency: CurrencyId = 'USD'): Seed => ({ name, type: AccountType.LIABILITY, currency, balance, credit_limit });
@@ -30,7 +32,7 @@ function settle(seed: Seed[], plan: ExpectedAction[]): HarnessCase['expected'] {
     } else {
       const from = find(step.from), to = find(step.to);
       const amount = step.amount === 'all' ? from.balance : Number(step.amount);
-      from.balance = cents(from.balance - amount); to.balance = cents(to.balance + Number(step.targetAmount ?? amount)); amounts.push(amount);
+      from.balance = cents(from.balance - amount); to.balance = cents(to.balance + cents(amount * fx.conversion_rates[to.currency] / fx.conversion_rates[from.currency])); amounts.push(amount);
     }
   }
   return { accounts: accounts.map(({ name, type, currency, balance, credit_limit }) => ({ name, type, currency, balance, ...(credit_limit === undefined ? {} : { credit_limit }) })),
@@ -38,8 +40,9 @@ function settle(seed: Seed[], plan: ExpectedAction[]): HarnessCase['expected'] {
 }
 const ok = (id: string, text: string, seed: Seed[], plan: ExpectedAction[]): HarnessCase => ({ id, text, seed, plan, expected: settle(seed, plan) });
 const unchanged = (seed: Seed[]) => settle(seed, []).accounts;
-const none = (id: string, text: string, seed: Seed[]): HarnessCase => ({ id, text, seed, plan: [], expected: { accounts: unchanged(seed), transactions: 0, outcome: 'no_action' } });
 const ask = (id: string, text: string, seed: Seed[]): HarnessCase => ({ id, text, seed, plan: [], expected: { accounts: unchanged(seed), transactions: 0, outcome: 'clarification' } });
+// A transaction with no stated amount: the host rejection notice and a model ask both pass; no draft, no write.
+const needsAmount = (id: string, text: string, seed: Seed[]): HarnessCase => ({ id, text, seed, plan: [], expected: { accounts: unchanged(seed), transactions: 0, outcome: 'amount_required' } });
 const reject = (id: string, text: string, seed: Seed[], plan: ExpectedAction[], error: string): HarnessCase => ({ id, text, seed, plan, expected: { accounts: unchanged(seed), transactions: 0, outcome: 'reject', error } });
 
 const chase = asset('chase checking', 1200), wallet = asset('Cash Wallet', 300), amex = card('Amex Gold', -250, 5000);
@@ -57,11 +60,9 @@ export const HARNESS_CASES: HarnessCase[] = [
   ok('transfer-repay-en', 'Pay $250 toward Amex Gold from chase checking.', [chase, amex], [transfer('chase checking', 'Amex Gold', 250)]),
   ok('transfer-repay-zh', '用招商银行还招行信用卡1500', [bank, cnCard], [transfer('招商银行', '招行信用卡', 1500)]),
   ok('transfer-all-en-1', 'Empty Cash Wallet into chase checking.', [chase, wallet], [transfer('Cash Wallet', 'chase checking', 'all')]),
-  ok('transfer-all-en-2', 'Move everything left in Travel Fund back to chase checking.', [chase, asset('Travel Fund', 137.25)], [transfer('Travel Fund', 'chase checking', 'all')]),
   ok('transfer-all-zh-1', '把现金钱包的钱全部转到招商银行', [bank, cash], [transfer('现金钱包', '招商银行', 'all')]),
-  ok('transfer-all-zh-2', '支付宝里剩下的都转回招商银行', [bank, alipay], [transfer('支付宝', '招商银行', 'all')]),
-  ok('transfer-cross-en', 'Convert 100 from chase checking to Wise EUR; I received 92 euros.', [chase, asset('Wise EUR', 40, 'EUR')], [transfer('chase checking', 'Wise EUR', 100, 92)]),
-  ok('transfer-cross-zh', '从招商银行换500到港币账户，到账540港币', [bank, asset('港币账户', 0, 'HKD')], [transfer('招商银行', '港币账户', 500, 540)]),
+  ok('transfer-cross-en', 'Transfer 100 USD from chase checking to Wise EUR.', [chase, asset('Wise EUR', 40, 'EUR')], [transfer('chase checking', 'Wise EUR', 100)]),
+  ok('transfer-cross-zh', '从招商银行转500人民币到港币账户', [bank, asset('港币账户', 0, 'HKD')], [transfer('招商银行', '港币账户', 500)]),
   // Account creation: assets, cards and card brands, opening debt, currencies, several at once.
   ok('create-asset-en-1', 'Create an account called Rainy Day Fund with $500.', [], [opening('Rainy Day Fund', 500)]),
   ok('create-asset-en-2', 'Add a checking account named BoA Checking.', [], [opening('BoA Checking')]),
@@ -79,10 +80,8 @@ export const HARNESS_CASES: HarnessCase[] = [
   ok('create-several-en', 'Add Lunch Money with 20 and Bus Pass with 30.', [], [opening('Lunch Money', 20), opening('Bus Pass', 30)]),
   // Spending from assets and cards, with stated notes.
   ok('spend-asset-en-1', 'Spent $14 on lunch from Cash Wallet.', [wallet], [expense('Cash Wallet', 14)]),
-  ok('spend-asset-en-2', 'Paid 60 for groceries with chase checking.', [chase], [expense('chase checking', 60)]),
   ok('spend-card-en', 'Coffee was $5.25 on Amex Gold.', [amex], [expense('Amex Gold', 5.25)]),
   ok('spend-asset-zh-1', '用微信零钱买了杯奶茶18', [asset('微信零钱', 120, 'CNH')], [expense('微信零钱', 18)]),
-  ok('spend-asset-zh-2', '现金钱包付了打车费35', [cash], [expense('现金钱包', 35)]),
   ok('spend-card-zh', '招行信用卡刷了一顿火锅268', [cnCard], [expense('招行信用卡', 268)]),
   ok('spend-memo-en', 'Log $40 from Cash Wallet, note: birthday gift.', [wallet], [{ ...expense('Cash Wallet', 40), memo: 'birthday gift' }]),
   ok('spend-memo-zh', '从招商银行支出120，备注水电费', [bank], [{ ...expense('招商银行', 120), memo: '水电费' }]),
@@ -102,9 +101,9 @@ export const HARNESS_CASES: HarnessCase[] = [
   ok('multi-repay-spend-en', 'Pay 100 to Amex Gold from chase checking, then log a $30 dinner on Amex Gold.', [chase, amex], [transfer('chase checking', 'Amex Gold', 100), expense('Amex Gold', 30)]),
   ok('multi-three-en', 'Create Gym Fund with 100, spend 40 from it, and move the rest to chase checking.', [chase], [opening('Gym Fund', 100), expense('Gym Fund', 40), transfer('Gym Fund', 'chase checking', 'all')]),
   // Edge group: nothing to do, missing information, host rejection, cancellation.
-  none('edge-question-en', 'How much is in chase checking?', [chase]),
-  none('edge-negation-zh', '别把现金钱包的钱转走', [bank, cash]),
-  ask('edge-ask-amount-en', 'Transfer from chase checking to Cash Wallet.', [chase, wallet]),
+  ask('edge-question-en', 'How much is in chase checking?', [chase]),
+  ask('edge-negation-zh', '别把现金钱包的钱转走', [bank, cash]),
+  needsAmount('edge-ask-amount-en', 'Transfer from chase checking to Cash Wallet.', [chase, wallet]),
   { id: 'edge-cancel', text: 'Create Cancel Probe with 100.', seed: [wallet], plan: [opening('Cancel Probe', 100)], expected: { accounts: unchanged([wallet]), transactions: 0, outcome: 'cancel' } },
   ask('edge-ask-target-zh', '从招商银行转500', [bank, cash]),
   reject('edge-missing-account-en', 'Spent 20 from Blue Jar.', [wallet], [expense('Blue Jar', 20)], 'Account not found'),
