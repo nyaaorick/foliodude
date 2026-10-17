@@ -48,6 +48,7 @@ async function fetchUsdBaseRates(apiKey: string): Promise<Record<string, number>
 export async function fetchUsdExchangeRates(
   currencies: string[],
   apiKey: string | null,
+  onNotice?: (message: string) => void,
 ): Promise<Record<string, number>> {
   const normalizedCurrencies = [
     ...new Set(currencies.map(normalizeCurrency).filter(Boolean)),
@@ -61,12 +62,14 @@ export async function fetchUsdExchangeRates(
     Object.fromEntries(normalizedCurrencies.map((currency) => [currency, 1]));
 
   if (!apiKey) {
+    onNotice?.('No exchange rate API key configured. Using a 1:1 exchange rate.');
     return identityFallback();
   }
 
   try {
     const conversionRates = await fetchUsdBaseRates(apiKey);
     if (!conversionRates) {
+      onNotice?.('Exchange rates are unavailable. Using a 1:1 exchange rate.');
       return identityFallback();
     }
 
@@ -77,6 +80,7 @@ export async function fetchUsdExchangeRates(
 
       const directRate = conversionRates[currency];
       if (typeof directRate !== 'number' || !Number.isFinite(directRate) || directRate <= 0) {
+        onNotice?.(`Exchange rate unavailable for ${currency}. Using 1:1 against USD.`);
         rates[currency] = 1;
         continue;
       }
@@ -86,6 +90,7 @@ export async function fetchUsdExchangeRates(
 
     return rates;
   } catch {
+    onNotice?.('Exchange rates could not be loaded. Using a 1:1 exchange rate.');
     return identityFallback();
   }
 }
