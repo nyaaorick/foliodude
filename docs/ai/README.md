@@ -39,7 +39,7 @@ Edge/Firefox paths; `FOLIO_AI_BROWSER_PATH` overrides the real-model runner path
 | `npm run ai:ui` | Fixed-output PWA UI on an owned test Vite server, port 4180 |
 | `npm run ai:ui -- --firefox` | Installed production extension UI; requires `npm run build:firefox` first |
 | `npm run ai:eval` | **Default model test**: the 10-case core suite on Edge, once; every case must pass (about 4 minutes locally) |
-| `npm run ai:eval -- --full` | Archived: Edge/Firefox 57-case regression ×3 and 100-case holdout ×1, several hours. Run only on explicit request |
+| `npm run ai:eval -- --full` | Archived: Edge/Firefox 53-case regression ×3 and 68-case holdout ×1, several hours. Run only on explicit request |
 | `npm run harness:ai -- --help` | Individual browser/suite (`core` default, `regression`, `holdout`)/repeat/case/model-folder selection |
 | `npm run harness:ai -- --remote …` | Same pipeline against the remote endpoint in the gitignored root `config.json` (see Remote evaluation) |
 | `npm run ai:report -- results --baseline --verification FILE` | Frozen four-suite report plus actual application verification |
@@ -71,7 +71,7 @@ Edge, one repetition, **10/10**. They cover a stated-amount transfer, transfer
 everything, card repayment, a cross-currency transfer, an asset opening, a card brand
 with debt, card spending, a partial-name account match, a three-step plan, and a
 missing amount that must be asked for. The full suites are archived, not deleted:
-regression (57, ≥95%, all critical cases, three repetitions) and holdout (100, ≥90%)
+regression (53, ≥95%, all critical cases, three repetitions) and holdout (100, ≥90%)
 keep their original gates and run only on explicit request. A draft proposed for a negative or
 hypothetical request is a plan failure and is reported (forbidden proposals,
 executable no-action drafts), but is not a separate gate: FolioDude is a personal
@@ -145,8 +145,12 @@ of its name that only it has ("把我chase里记录一笔debit消费" uses chase
 are whole words, Chinese parts substrings); the draft carries the full name, and a
 part shared by several accounts is rejected. New account names must still appear
 verbatim. Missing information asks for clarification.
-`"all"` resolves the locked remaining source balance after preceding steps. Cross-
-currency transfers require an explicit received amount. Edit fields before saving;
+`"all"` resolves the locked remaining source balance after preceding steps. For AI
+transfers, only the sent amount is extracted. The application fetches exchange
+rates and computes the received amount; preview edits and Save reuse that snapshot.
+Refresh preview fetches a new snapshot. With no API key or an API failure, the UI
+shows a notice and the preview uses 1:1. Received amount is not an AI/editable field.
+Edit fields before saving;
 editing the original request invalidates its draft. Changed accounts require refreshed
 review. Save is atomic and model-free; there is no automatic retry or undo. The
 Receipt is a dialog listing the saved steps in order — accounts, amount, links to the
@@ -188,17 +192,17 @@ afterwards, and throws on any other keyword. It also drops `description` and `id
 field meanings travel in the instructions, which every backend reads, and the local
 decoder never shows the schema to the model. Each wire step schema carries an id, so
 it is emitted once under `$defs` and referenced from both its intent branch and
-`multi` (7523 → 3772 characters; on Groq 2489 → 1656 input tokens per request, of which
+`multi` (historical schema measurement: 7523 → 3772 characters; on Groq 2489 → 1656 input tokens per request, of which
 582 are instructions and request). Strict mode encodes optional fields as
 required-nullable. Because a root union is unsupported, the internal
 `{steps} | {clarification}` union travels as `{"result": …}`. `result` starts with
 an `intent`: `create`, `spend` or `transfer` (from each tool's `plannerIntent`),
-`multi` (two or more steps of different kinds), `none` or `ask`. Each branch fixes the
+`multi` (two or more steps of different kinds), or `ask` (the only non-executing intent). Each branch fixes the
 plan's shape; the grammar cannot express "different kinds", so `fromWire` rejects a
 same-kind `multi` as a format failure.
 The model fills only each tool's registry planner view: name/type/currency/
 balance/credit limit/reward currency, account/amount/currency/memo, and
-from/to/amount/currencies/`targetAmount`/memo. Transfer has two views told apart by
+from/to/sent amount/currencies/memo. The wire has no `targetAmount` field. Transfer has two views told apart by
 action name: `transfer` (a positive amount) and `transfer_all` (no amount; `fromWire`
 restores `amount: "all"`). Groq's strict validator rejects a `number | "all"` field
 even for valid output, because it cannot disambiguate the union. Strict mode makes the model fill these
@@ -218,11 +222,15 @@ Native constraints do not replace understanding or checks. Zod, grounding, regis
 permissions, preview, stale-state checks and the DB CHECKs all still apply. Outputs
 that satisfy the decoder can still fail Zod: a 0 amount, an empty name or
 clarification, or a non-ISO date. These are reported as `format` failures (diagnose
-category `format/constraint-outside-decoder-subset`). One documented exception: the
-local model writes `transfer` with `amount: 0` for "move everything", which the
-decoder cannot exclude, so `fromWire` reads a 0 transfer as `transfer_all`. A request
-that gives no amount can therefore produce a move-everything draft; Review shows
-"Entire remaining balance" and Save still needs explicit confirmation.
+category `format/constraint-outside-decoder-subset`). If an otherwise fully shaped
+response fails only because transaction amounts are zero, the host rejects it
+(`status: 'rejected'`) and shows a notice that the transfer or expense needs a
+numeric amount; no draft is created (including for mixed plans). This is the host
+refusing the answer, not a model ask, and the harness counts it as a model format
+failure. Other malformed responses throw. Zero is never converted into transfer-all
+into another value. Only an explicit `transfer_all` step means all
+remaining funds. A missing transaction amount passes as the host rejection or a model
+ask (fixture outcome `amount_required`).
 
 A provider that validates after generating (Groq) returns a 400
 `json_validate_failed` with the rejected output in `failed_generation`; that is the
@@ -237,41 +245,46 @@ There is no prompt-formatting fallback, repair call or backend switch. Remote mo
 verified live against Groq `openai/gpt-oss-120b` (Responses API, strict
 `json_schema`, CORS) and in UI tests against an intercepted fixture endpoint.
 
-Production prompt: removed "Output one JSON object…", "No Markdown or
-explanations", `{"steps":[]}` / `{"clarification":…}` shapes, "Never combine steps
-and clarification", "Amounts/balances are JSON numbers", "Omit unknown optional
-fields, no null", both JSON examples, "JSON only. Stop after the closing brace", the
-input suffix, and enum-spelling/type hints in registry field descriptions. Retained:
-verbatim names and generic-suffix exclusion, ASSET/USD/0 defaults, cards and card
-brands (Amex, Visa) as LIABILITY, initial debt as a negative LIABILITY with no
-transaction, negation/question/hypothetical/greeting = no action, missing
-information → clarification, ordered dependent steps and pronouns, no implicit
-creation of existing accounts, explicit cross-currency `targetAmount`, today's date.
-Added: four placeholder-name examples (transfer_all, spend, none, ask; two English,
-two Chinese; no JSON syntax), and one line per planner view generated from the
-registry (later views of an action are described against its first, e.g.
-`transfer_all: …; as transfer, without amount`). The budget is
-`MLP_LIMITS.instructionChars` = 2000. `YYYY-MM-DD` stays because the decoder cannot
-express date patterns.
+Production prompt: concise Chinese decision rules handle both Chinese and English
+requests. Read the whole request, identify every operation in order, and choose
+`multi` only for different action kinds. Prefer existing accounts and return their
+full names; distinguish account opening from spending, and send card repayments
+from the asset account to the card. Opening defaults are ASSET/USD/0; card brands
+and debt imply LIABILITY with negative debt. Unknown transaction amounts require
+ASK; explicit all uses the amount-free `transfer_all` view.
+
+Five synthetic examples cover existing accounts, card opening, dependent mixed steps,
+transfer-all and missing amounts. Their names and wording are absent from core and
+holdout fixtures. The model extracts only the sent amount; exchange rates and
+received amounts belong to the application. A sent-versus-received example and rule
+were removed: with them the model wrote `transfer_all` for stated amounts (see
+[audit](audit.md)). The prompt measures 1692 characters with the current registry
+and date. This guides inference;
+it does not change model weights, and measured semantic failures remain.
+One line per planner view is generated from the registry (later views are described
+against the first, e.g. `transfer_all: …; as transfer, without amount`). The budget
+is `MLP_LIMITS.instructionChars` = 2000.
 
 ## Fixture expectations
 
 The core suite is a fixed selection from the regression set, listed once in the
 manifest (`coreIds`); `harness:ai` sends those ids and `report-utils` grades them.
-The regression set (`eval/cases.ts`, manifest version 3) is 57 explicit bilingual
+The regression set (`eval/cases.ts`, manifest version 8) is 53 explicit bilingual
 cases weighted to everyday use, each with its exact plan; end balances are derived
 from the seed and plan (`settle`), never hand-computed. Chinese cases use CNH accounts.
 
 | Group | Cases | Covers |
 |---|---:|---|
-| `transfer-*` | 15 | stated amounts (decimals, `1,000`), pronouns, card repayment, everything (`transfer_all`), currency conversion with the received amount |
+| `transfer-*` | 13 | stated amounts (decimals, `1,000`), pronouns, card repayment, everything (`transfer_all`), cross-currency source extraction and application-calculated receipts |
 | `create-*` | 14 | assets, cards and card brands, opening debt, credit limits, EUR/HKD/CNH, several at once |
-| `spend-*` | 8 | asset and card spending, stated memos |
+| `spend-*` | 6 | asset and card spending, stated memos |
 | `match-*` | 7 | existing accounts named by part of their name (`chase` → chase checking, 招商 → 招商银行, 信用卡 → 招行信用卡), case-insensitive names, ambiguous parts |
 | `multi-*` | 6 | steps that depend on earlier ones (create then spend/fund, spend then move the rest, two transfers) |
 | `edge-*` | 7 | a question, a negation, missing amount or destination, a missing account, rollback, cancellation |
 
-The holdout (`eval/holdout-cases.ts`, 100 cases) is unchanged. Its wording stays out
+The holdout (`eval/holdout-cases.ts`, 68 cases: 10 groups × en/zh, five numbered
+instances per group, one for `opening`, `debt`, `expense`, `hypothetical`) keeps its
+original wording; its 12 negation/hypothetical cases expect ask. Its wording stays out
 of prompts and tuning. A test feeds every regression plan through the pipeline as a
 perfect answer: each `success` case must produce a draft and each rejected case must
 fail with its named error, so no fixture is unpassable. The rules the cases encode
@@ -279,18 +292,48 @@ fail with its named error, so no fixture is unpassable. The rules the cases enco
 
 - `success`: a validated draft whose steps and operational parameters match exactly
   (unrequested optional memo/category/date are not scored).
-- `no_action`: the model must answer `none`. A clarification instead is a failure.
-- `clarification`: the model must answer `ask`.
+- `clarification`: the model must answer `ask` with no actions. Missing details require
+  a question; negation, questions, hypotheticals and greetings receive a brief reply.
+  There is no `none` intent or `no_action` application status.
+- `amount_required`: a transaction with no stated amount must leave no draft and no
+  write; the host zero-amount rejection notice or a model `ask` both pass.
 - `reject`: the model must faithfully extract the stated plan, and host validation
   must reject it with the named error (`Several accounts match`, `Account not found`,
-  `Insufficient balance` at save). Answering `none` or `ask` instead is a failure.
+  `Insufficient balance` at save). Answering `ask` instead is a failure.
 - `cancel`: a host-contract check that abort reaches the request.
 - Card brands/issuers open as LIABILITY; a bank account stays ASSET.
 - An existing account named by a part of its name that only it has is that account;
   it is never re-created. A part shared by several accounts is rejected.
 
-Still undecided: whether `ask` may substitute for `none` on how-to questions, and
-whether `none`/`ask` may substitute for `reject` when an account is missing.
+Still undecided: whether `ask` may substitute for `reject` when an account is missing.
+
+Manifest v4 and scoring v3 unify all 22 former no-action cases under ask (regression
+clarification 4/57; holdout clarification 30/100). Historical reports retain their
+original expectations and cannot establish accuracy under the new contract.
+
+Manifest v5 / scoring v4 remove received amounts from expected AI plans. Ledger
+expectations use the synthetic API response in `eval/fixtures/exchange-rates.json`;
+the browser harness intercepts exchange-rate requests, so evaluation never depends
+on live rates. Holdout wording remains unchanged; any reported received number is
+outside extraction, and ledger receipts follow the API fixture.
+
+Manifest v6 replaces the two regression requests that stated both sent and
+received amounts with ordinary source-amount-only transfers. They still exercise
+cross-currency application FX. Case counts and expected plans/balances are unchanged;
+compare scores only within the same fixture wording. Holdout wording is unchanged.
+
+Manifest v7 / scoring v5: `edge-ask-amount-en` (core) expects `amount_required`
+instead of `clarification`. The zero-amount rejection notice is the correct
+application result for a missing amount; a model ask also passes. Wording, plans
+and balances are unchanged; v6 scores are not comparable.
+
+Manifest v8 trims same-language duplicates from categories that fully passed one
+complete Edge run (regression 42/57, holdout 77/100 on v7): regression drops
+`transfer-all-en-2`, `transfer-all-zh-2`, `spend-asset-en-2`, `spend-asset-zh-2`
+(57 → 53); holdout keeps instance 1 of `opening`, `debt`, `expense`,
+`hypothetical` per language (100 → 68). Every category with a failure keeps all its
+cases; core and critical ids are unchanged, and kept ids are not renamed. Scoring
+rules are unchanged (v5), but suite totals differ, so compare v8 by case, not total.
 
 ## Model files and fine-tuning
 
